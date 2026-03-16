@@ -126,7 +126,7 @@ amazon_nova/
 
 **PROPRIETARY - ALL RIGHTS RESERVED**
 
-Copyright (c) 2025. All Rights Reserved.
+Copyright (c) 2026. All Rights Reserved.
 
 This software is proprietary and confidential. Unauthorized copying, distribution,
 modification, or use of this software is strictly prohibited. See the [LICENSE](LICENSE)
