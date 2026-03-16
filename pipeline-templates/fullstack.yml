@@ -1,0 +1,300 @@
+# Full-Stack Multi-Service CI/CD Pipeline
+# This template handles frontend, backend, and database migrations
+
+stages:
+  - install
+  - lint
+  - test
+  - build
+  - migrate
+  - deploy
+  - verify
+
+variables:
+  DOCKER_DRIVER: overlay2
+
+# ============================================
+# Frontend Jobs
+# ============================================
+
+frontend_install:
+  stage: install
+  image: node:18-alpine
+  script:
+    - cd frontend
+    - npm ci
+  artifacts:
+    path: frontend/node_modules/
+    expire_in: 1 hour
+  cache:
+    key: frontend-${CI_COMMIT_REF_SLUG}
+    paths:
+      - frontend/node_modules/
+
+frontend_lint:
+  stage: lint
+  image: node:18-alpine
+  script:
+    - cd frontend
+    - npm run lint
+    - npm run type-check
+  dependencies:
+    - frontend_install
+
+frontend_test:
+  stage: test
+  image: node:18-alpine
+  script:
+    - cd frontend
+    - npm run test -- --coverage
+  artifacts:
+    path: frontend/coverage/
+    expire_in: 7 days
+  dependencies:
+    - frontend_install
+
+frontend_build:
+  stage: build
+  image: node:18-alpine
+  script:
+    - cd frontend
+    - npm run build
+  artifacts:
+    path: frontend/dist/
+    expire_in: 30 days
+  dependencies:
+    - frontend_install
+
+# ============================================
+# Backend Jobs
+# ============================================
+
+backend_install:
+  stage: install
+  image: node:18-alpine
+  script:
+    - cd backend
+    - npm ci
+  artifacts:
+    path: backend/node_modules/
+    expire_in: 1 hour
+  cache:
+    key: backend-${CI_COMMIT_REF_SLUG}
+    paths:
+      - backend/node_modules/
+
+backend_lint:
+  stage: lint
+  image: node:18-alpine
+  script:
+    - cd backend
+    - npm run lint
+    - npm run type-check
+  dependencies:
+    - backend_install
+
+backend_test_unit:
+  stage: test
+  image: node:18-alpine
+  script:
+    - cd backend
+    - npm run test:unit -- --coverage
+  artifacts:
+    path: backend/coverage/
+    expire_in: 7 days
+  dependencies:
+    - backend_install
+
+backend_test_integration:
+  stage: test
+  image: node:18-alpine
+  services:
+    - postgres:14
+    - redis:7-alpine
+  variables:
+    POSTGRES_DB: test_db
+    POSTGRES_USER: test_user
+    POSTGRES_PASSWORD: test_password
+    DATABASE_URL: "postgresql://test_user:test_password@postgres:5432/test_db"
+    REDIS_URL: "redis://redis:6379"
+  script:
+    - cd backend
+    - npm run test:integration
+  dependencies:
+    - backend_install
+
+backend_build:
+  stage: build
+  image: node:18-alpine
+  script:
+    - cd backend
+    - npm run build
+  artifacts:
+    path: backend/dist/
+    expire_in: 30 days
+  dependencies:
+    - backend_install
+
+# ============================================
+# Database Migration
+# ============================================
+
+db_migrate_staging:
+  stage: migrate
+  image: node:18-alpine
+  script:
+    - cd backend
+    - npm run migrate:up
+  environment:
+    name: staging-db
+  variables:
+    DATABASE_URL: $STAGING_DATABASE_URL
+  dependencies:
+    - backend_install
+  only:
+    - develop
+
+db_migrate_production:
+  stage: migrate
+  image: node:18-alpine
+  script:
+    - cd backend
+    - npm run migrate:up
+  environment:
+    name: production-db
+  variables:
+    DATABASE_URL: $PRODUCTION_DATABASE_URL
+  dependencies:
+    - backend_install
+  only:
+    - main
+  when: manual
+
+# ============================================
+# E2E Tests
+# ============================================
+
+e2e_tests:
+  stage: test
+  image: mcr.microsoft.com/playwright:latest
+  services:
+    - postgres:14
+    - redis:7-alpine
+  script:
+    - npm install -g pnpm
+    - pnpm install
+    - pnpm run test:e2e
+  artifacts:
+    path:
+      - test-results/
+      - playwright-report/
+    expire_in: 7 days
+    when: always
+  dependencies:
+    - frontend_build
+    - backend_build
+
+# ============================================
+# Docker Build
+# ============================================
+
+docker_build_frontend:
+  stage: build
+  image: docker:latest
+  services:
+    - docker:dind
+  script:
+    - docker build -t $CI_REGISTRY_IMAGE/frontend:$CI_COMMIT_SHORT_SHA ./frontend
+    - docker push $CI_REGISTRY_IMAGE/frontend:$CI_COMMIT_SHORT_SHA
+  dependencies:
+    - frontend_build
+  only:
+    - main
+    - develop
+
+docker_build_backend:
+  stage: build
+  image: docker:latest
+  services:
+    - docker:dind
+  script:
+    - docker build -t $CI_REGISTRY_IMAGE/backend:$CI_COMMIT_SHORT_SHA ./backend
+    - docker push $CI_REGISTRY_IMAGE/backend:$CI_COMMIT_SHORT_SHA
+  dependencies:
+    - backend_build
+  only:
+    - main
+    - develop
+
+# ============================================
+# Deployment
+# ============================================
+
+deploy_staging:
+  stage: deploy
+  image: alpine/k8s:latest
+  script:
+    - kubectl config use-context staging
+    - kubectl set image deployment/frontend frontend=$CI_REGISTRY_IMAGE/frontend:$CI_COMMIT_SHORT_SHA -n staging
+    - kubectl set image deployment/backend backend=$CI_REGISTRY_IMAGE/backend:$CI_COMMIT_SHORT_SHA -n staging
+    - kubectl rollout status deployment/frontend -n staging
+    - kubectl rollout status deployment/backend -n staging
+  environment:
+    name: staging
+    url: https://staging.example.com
+  dependencies:
+    - docker_build_frontend
+    - docker_build_backend
+  only:
+    - develop
+
+deploy_production:
+  stage: deploy
+  image: alpine/k8s:latest
+  script:
+    - kubectl config use-context production
+    - kubectl set image deployment/frontend frontend=$CI_REGISTRY_IMAGE/frontend:$CI_COMMIT_SHORT_SHA -n production
+    - kubectl set image deployment/backend backend=$CI_REGISTRY_IMAGE/backend:$CI_COMMIT_SHORT_SHA -n production
+    - kubectl rollout status deployment/frontend -n production
+    - kubectl rollout status deployment/backend -n production
+  environment:
+    name: production
+    url: https://example.com
+  dependencies:
+    - docker_build_frontend
+    - docker_build_backend
+  only:
+    - main
+  when: manual
+
+# ============================================
+# Verification
+# ============================================
+
+smoke_tests_staging:
+  stage: verify
+  image: curlimages/curl:latest
+  script:
+    - echo "Running smoke tests on staging..."
+    - curl --fail https://staging.example.com/health
+    - curl --fail https://staging-api.example.com/health
+  environment:
+    name: staging
+  dependencies:
+    - deploy_staging
+  only:
+    - develop
+
+smoke_tests_production:
+  stage: verify
+  image: curlimages/curl:latest
+  script:
+    - echo "Running smoke tests on production..."
+    - curl --fail https://example.com/health
+    - curl --fail https://api.example.com/health
+  environment:
+    name: production
+  dependencies:
+    - deploy_production
+  only:
+    - main

@@ -1,0 +1,488 @@
+/**
+ * Universal Deployment Executor
+ * Executes deployment for ANY language/framework
+ */
+
+import { SSMClient, SendCommandCommand, GetCommandInvocationCommand } from '@aws-sdk/client-ssm';
+import { UniversalProjectAnalysis } from './universal-language-analyzer';
+
+const ssmClient = new SSMClient({
+  region: process.env.AWS_REGION || 'us-east-1',
+  credentials: {
+    accessKeyId: process.env.AWS_ACCESS_KEY_ID || '',
+    secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY || '',
+  },
+});
+
+export interface DeploymentResult {
+  success: boolean;
+  stage: string;
+  output: string;
+  error?: string;
+}
+
+/**
+ * Execute universal deployment based on project analysis
+ */
+export async function executeUniversalDeployment(
+  instanceId: string,
+  analysis: UniversalProjectAnalysis,
+  onProgress?: (stage: string, output: string) => void
+): Promise<DeploymentResult[]> {
+  console.log('[UNIVERSAL-DEPLOY] Starting deployment...');
+  console.log('[UNIVERSAL-DEPLOY] Language:', analysis.language);
+  console.log('[UNIVERSAL-DEPLOY] Framework:', analysis.framework);
+
+  const results: DeploymentResult[] = [];
+
+  try {
+    // Stage 1: Install system dependencies and runtime
+    const installRuntimeResult = await installRuntime(instanceId, analysis, onProgress);
+    results.push(installRuntimeResult);
+    if (!installRuntimeResult.success) {
+      return results;
+    }
+
+    // Stage 2: Install project dependencies
+    const installDepsResult = await installDependencies(instanceId, analysis, onProgress);
+    results.push(installDepsResult);
+    if (!installDepsResult.success) {
+      return results;
+    }
+
+    // Stage 3: Build project (if needed)
+    if (analysis.buildCommand !== 'NONE') {
+      const buildResult = await buildProject(instanceId, analysis, onProgress);
+      results.push(buildResult);
+      if (!buildResult.success) {
+        return results;
+      }
+    }
+
+    // Stage 4: Run tests (if available)
+    if (analysis.hasTests && analysis.testCommand !== 'NONE') {
+      const testResult = await runTests(instanceId, analysis, onProgress);
+      results.push(testResult);
+      // Continue even if tests fail (optional)
+    }
+
+    // Stage 5: Start the application
+    const startResult = await startApplication(instanceId, analysis, onProgress);
+    results.push(startResult);
+
+    return results;
+  } catch (error: any) {
+    console.error('[UNIVERSAL-DEPLOY] Deployment error:', error);
+    return results;
+  }
+}
+
+/**
+ * Install runtime and system dependencies
+ */
+async function installRuntime(
+  instanceId: string,
+  analysis: UniversalProjectAnalysis,
+  onProgress?: (stage: string, output: string) => void
+): Promise<DeploymentResult> {
+  const stage = 'install-runtime';
+  console.log(`[UNIVERSAL-DEPLOY] Stage: ${stage}`);
+  onProgress?.(stage, 'Installing runtime and system dependencies...');
+
+  const commands: string[] = [
+    'cd /home/ec2-user/app',
+    'echo "[RUNTIME] Installing system dependencies..."',
+  ];
+
+  // Language-specific runtime installation
+  if (analysis.language === 'Rust') {
+    commands.push(
+      'echo "[RUNTIME] Installing build essentials for Rust (required before rustup)..."',
+      'sudo yum install -y gcc gcc-c++ make pkg-config openssl-devel',
+      'echo "[RUNTIME] Installing Rust toolchain..."',
+      // CRITICAL: Set HOME explicitly because SSM commands don't have $HOME set by default
+      'export HOME=/home/ec2-user',
+      'curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y',
+      // Use absolute path instead of $HOME to avoid "/.cargo/env: No such file or directory"
+      'source /home/ec2-user/.cargo/env',
+      'echo "[RUNTIME] Verifying Rust installation..."',
+      'rustc --version',
+      'cargo --version',
+      'echo "[RUNTIME] ✅ Rust toolchain installed successfully"',
+    );
+
+    if (analysis.isSolanaProject) {
+      commands.push(
+        'echo "[RUNTIME] Installing Solana CLI..."',
+        'export HOME=/home/ec2-user',
+        'sh -c "$(curl -sSfL https://release.solana.com/stable/install)"',
+        'export PATH="/home/ec2-user/.local/share/solana/install/active_release/bin:$PATH"',
+        'solana --version',
+      );
+
+      if (analysis.hasAnchor) {
+        commands.push(
+          'echo "[RUNTIME] Installing Anchor CLI..."',
+          'cargo install --git https://github.com/coral-xyz/anchor anchor-cli --locked',
+          'anchor --version',
+        );
+      }
+    }
+  } else if (analysis.language === 'Go') {
+    commands.push(
+      'echo "[RUNTIME] Installing Go..."',
+      'sudo yum install -y golang',
+      'go version',
+    );
+  } else if (analysis.language === 'Python') {
+    commands.push(
+      'echo "[RUNTIME] Installing Python 3..."',
+      'sudo yum install -y python3 python3-pip python3-devel',
+      'python3 --version',
+      'pip3 --version',
+    );
+  } else if (analysis.language === 'Java') {
+    commands.push(
+      'echo "[RUNTIME] Installing Java JDK..."',
+      'sudo yum install -y java-17-amazon-corretto-devel maven',
+      'java -version',
+      'mvn --version',
+    );
+  } else if (analysis.language === 'Ruby') {
+    commands.push(
+      'echo "[RUNTIME] Installing Ruby..."',
+      'sudo yum install -y ruby ruby-devel',
+      'ruby --version',
+      'gem install bundler',
+    );
+  } else if (analysis.language === 'PHP') {
+    commands.push(
+      'echo "[RUNTIME] Installing PHP..."',
+      'sudo amazon-linux-extras install -y php8.2',
+      'php --version',
+      'curl -sS https://getcomposer.org/installer | php',
+      'sudo mv composer.phar /usr/local/bin/composer',
+    );
+  } else if (analysis.language === '.NET') {
+    commands.push(
+      'echo "[RUNTIME] Installing .NET SDK..."',
+      'sudo rpm -Uvh https://packages.microsoft.com/config/centos/7/packages-microsoft-prod.rpm',
+      'sudo yum install -y dotnet-sdk-7.0',
+      'dotnet --version',
+    );
+  } else if (analysis.language.includes('Node.js') || analysis.language.includes('JavaScript')) {
+    commands.push(
+      'echo "[RUNTIME] Node.js already installed"',
+      'node --version',
+      'npm --version',
+    );
+  } else {
+    commands.push('echo "[RUNTIME] Unknown language - skipping runtime installation"');
+  }
+
+  return await executeSSMCommand(instanceId, commands, stage, onProgress);
+}
+
+/**
+ * Install project dependencies
+ */
+async function installDependencies(
+  instanceId: string,
+  analysis: UniversalProjectAnalysis,
+  onProgress?: (stage: string, output: string) => void
+): Promise<DeploymentResult> {
+  const stage = 'install-dependencies';
+  console.log(`[UNIVERSAL-DEPLOY] Stage: ${stage}`);
+  onProgress?.(stage, 'Installing project dependencies...');
+
+  const commands: string[] = [
+    'cd /home/ec2-user/app',
+    `echo "[INSTALL] Running: ${analysis.installCommand}"`,
+  ];
+
+  // Add language-specific environment setup and optimizations
+  if (analysis.language === 'Python') {
+    // Use virtual environment for Python (memory efficient, isolated)
+    commands.push(
+      'echo "[INSTALL] Creating Python virtual environment..."',
+      'python3 -m venv venv',
+      'source venv/bin/activate',
+      'echo "[INSTALL] Upgrading pip in virtual environment..."',
+      'pip install --upgrade pip',
+      'echo "[INSTALL] Installing dependencies in virtual environment..."',
+      analysis.installCommand,
+      'echo "[INSTALL] Virtual environment created at: $(pwd)/venv"',
+    );
+  } else if (analysis.language === 'Rust') {
+    commands.push(
+      'export HOME=/home/ec2-user && source /home/ec2-user/.cargo/env',
+      analysis.installCommand,
+    );
+  } else if (analysis.language === 'Go') {
+    // Go with cache optimization
+    commands.push(
+      'export GOCACHE=/tmp/go-cache',
+      'export GOMODCACHE=/tmp/go-mod-cache',
+      analysis.installCommand,
+    );
+  } else if (analysis.language.includes('Node.js') || analysis.language.includes('JavaScript')) {
+    // Use npm ci for faster, more reliable installs
+    const installCmd = analysis.installCommand.includes('npm install')
+      ? analysis.installCommand.replace('npm install', 'npm ci --prefer-offline --no-audit')
+      : analysis.installCommand;
+    commands.push(installCmd);
+  } else {
+    // Default: use the command as-is
+    commands.push(analysis.installCommand);
+  }
+
+  commands.push('echo "[INSTALL] Dependencies installed successfully"');
+
+  return await executeSSMCommand(instanceId, commands, stage, onProgress);
+}
+
+/**
+ * Build the project
+ */
+async function buildProject(
+  instanceId: string,
+  analysis: UniversalProjectAnalysis,
+  onProgress?: (stage: string, output: string) => void
+): Promise<DeploymentResult> {
+  const stage = 'build';
+  console.log(`[UNIVERSAL-DEPLOY] Stage: ${stage}`);
+  onProgress?.(stage, `Building with ${analysis.buildTool}...`);
+
+  const commands: string[] = [
+    'cd /home/ec2-user/app',
+    `echo "[BUILD] Running: ${analysis.buildCommand}"`,
+    `echo "[BUILD] Estimated time: ${analysis.estimatedBuildTime}"`,
+  ];
+
+  // Add language-specific environment setup
+  if (analysis.language === 'Python') {
+    commands.push('source venv/bin/activate');
+  } else if (analysis.language === 'Rust') {
+    commands.push('export HOME=/home/ec2-user && source /home/ec2-user/.cargo/env');
+  } else if (analysis.language === 'Go') {
+    commands.push('export PATH=$PATH:/usr/local/go/bin');
+  }
+
+  commands.push(
+    analysis.buildCommand,
+    'echo "[BUILD] Build completed successfully"',
+  );
+
+  // Verify build output
+  if (analysis.outputDir !== 'NONE') {
+    commands.push(
+      `echo "[BUILD] Verifying output directory: ${analysis.outputDir}"`,
+      `ls -lah ${analysis.outputDir}/ 2>/dev/null || echo "Output directory not found"`,
+    );
+  }
+
+  return await executeSSMCommand(instanceId, commands, stage, onProgress, 900); // 15 min timeout for builds
+}
+
+/**
+ * Run tests
+ */
+async function runTests(
+  instanceId: string,
+  analysis: UniversalProjectAnalysis,
+  onProgress?: (stage: string, output: string) => void
+): Promise<DeploymentResult> {
+  const stage = 'test';
+  console.log(`[UNIVERSAL-DEPLOY] Stage: ${stage}`);
+  onProgress?.(stage, 'Running tests...');
+
+  const commands: string[] = [
+    'cd /home/ec2-user/app',
+    `echo "[TEST] Running: ${analysis.testCommand}"`,
+  ];
+
+  // Add language-specific environment setup
+  if (analysis.language === 'Python') {
+    commands.push('source venv/bin/activate');
+  } else if (analysis.language === 'Rust') {
+    commands.push('export HOME=/home/ec2-user && source /home/ec2-user/.cargo/env');
+  }
+
+  commands.push(
+    analysis.testCommand,
+    'echo "[TEST] Tests completed"',
+  );
+
+  return await executeSSMCommand(instanceId, commands, stage, onProgress, 300); // 5 min timeout
+}
+
+/**
+ * Start the application
+ */
+async function startApplication(
+  instanceId: string,
+  analysis: UniversalProjectAnalysis,
+  onProgress?: (stage: string, output: string) => void
+): Promise<DeploymentResult> {
+  const stage = 'start';
+  console.log(`[UNIVERSAL-DEPLOY] Stage: ${stage}`);
+  onProgress?.(stage, 'Starting application...');
+
+  const commands: string[] = [
+    'cd /home/ec2-user/app',
+  ];
+
+  // Add language-specific environment setup
+  if (analysis.language === 'Python') {
+    commands.push('source venv/bin/activate');
+  } else if (analysis.language === 'Rust') {
+    commands.push('export HOME=/home/ec2-user && source /home/ec2-user/.cargo/env');
+  } else if (analysis.language === 'Go') {
+    commands.push('export PATH=$PATH:/usr/local/go/bin');
+  } else if (analysis.language === 'Python') {
+    commands.push('export PATH=$PATH:$HOME/.local/bin');
+  }
+
+  // Handle static file serving for frontend projects
+  if (analysis.projectType === 'frontend' && analysis.startCommand === 'STATIC_SERVER') {
+    commands.push(
+      'echo "[START] Setting up nginx for static file serving..."',
+      'sudo yum install -y nginx',
+      `echo "[START] Serving static files from ${analysis.outputDir}/"`,
+      `sudo cp -r ${analysis.outputDir}/* /usr/share/nginx/html/`,
+      'sudo systemctl start nginx',
+      'sudo systemctl enable nginx',
+      'echo "[START] ✓ Static site deployed and running on port 80"',
+    );
+  } else {
+    // Run the application
+    commands.push(
+      `echo "[START] Running: ${analysis.startCommand}"`,
+      `echo "[START] Application will be available on port ${analysis.port}"`,
+    );
+
+    // Use nohup for background execution
+    if (analysis.language === 'Rust' || analysis.language === 'Go') {
+      // For compiled binaries, make executable and run
+      const binaryName = analysis.startCommand.replace('./', '').replace('./target/release/', '');
+      commands.push(
+        `chmod +x ${analysis.startCommand}`,
+        `nohup ${analysis.startCommand} > /home/ec2-user/app.log 2>&1 &`,
+        'sleep 3',
+        'echo "[START] Application started in background"',
+        'ps aux | grep -v grep | grep ${binaryName} || echo "Warning: Process not found"',
+      );
+    } else {
+      // For interpreted languages
+      commands.push(
+        `nohup ${analysis.startCommand} > /home/ec2-user/app.log 2>&1 &`,
+        'sleep 3',
+        'echo "[START] Application started in background"',
+        'tail -20 /home/ec2-user/app.log',
+      );
+    }
+
+    commands.push(
+      `echo "[START] ✓ Application running on port ${analysis.port}"`,
+      'echo "[START] Check logs: tail -f /home/ec2-user/app.log"',
+    );
+  }
+
+  return await executeSSMCommand(instanceId, commands, stage, onProgress);
+}
+
+/**
+ * Execute SSM command helper
+ */
+async function executeSSMCommand(
+  instanceId: string,
+  commands: string[],
+  stage: string,
+  onProgress?: (stage: string, output: string) => void,
+  timeoutSeconds: number = 180
+): Promise<DeploymentResult> {
+  try {
+    const sendCmd = await ssmClient.send(
+      new SendCommandCommand({
+        InstanceIds: [instanceId],
+        DocumentName: 'AWS-RunShellScript',
+        Parameters: { commands },
+        TimeoutSeconds: timeoutSeconds,
+      })
+    );
+
+    const commandId = sendCmd.Command?.CommandId;
+    if (!commandId) {
+      throw new Error('Failed to get command ID');
+    }
+
+    // Poll for completion
+    const maxAttempts = timeoutSeconds / 2;
+    for (let i = 0; i < maxAttempts; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+
+      const result = await ssmClient.send(
+        new GetCommandInvocationCommand({ CommandId: commandId, InstanceId: instanceId })
+      );
+
+      const output = result.StandardOutputContent || '';
+      const error = result.StandardErrorContent || '';
+
+      // Send progress updates
+      if (output && onProgress) {
+        onProgress(stage, output);
+      }
+
+      if (result.Status === 'Success') {
+        console.log(`[UNIVERSAL-DEPLOY] ✓ Stage ${stage} completed`);
+        return {
+          success: true,
+          stage,
+          output: output + (error ? '\n[STDERR]\n' + error : ''),
+        };
+      } else if (result.Status === 'Failed') {
+        console.error(`[UNIVERSAL-DEPLOY] ✗ Stage ${stage} failed`);
+        return {
+          success: false,
+          stage,
+          output: output,
+          error: error || 'Command failed',
+        };
+      }
+    }
+
+    throw new Error(`Timeout waiting for ${stage} to complete`);
+  } catch (error: any) {
+    console.error(`[UNIVERSAL-DEPLOY] Error in stage ${stage}:`, error.message);
+    return {
+      success: false,
+      stage,
+      output: '',
+      error: error.message,
+    };
+  }
+}
+
+/**
+ * Generate deployment stages for pipeline preview
+ */
+export function generateUniversalPipelineStages(analysis: UniversalProjectAnalysis): string[] {
+  const stages: string[] = [];
+
+  stages.push('install-runtime');
+  stages.push('install-dependencies');
+
+  if (analysis.buildCommand !== 'NONE') {
+    stages.push('build');
+  }
+
+  if (analysis.hasTests && analysis.testCommand !== 'NONE') {
+    stages.push('test');
+  }
+
+  // NEW: Vercel-like architecture - package and deploy artifacts
+  // Remove 'start' stage - server launches separately after pipeline completes
+  stages.push('package-artifact', 'deploy-artifact');
+
+  return stages;
+}

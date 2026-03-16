@@ -1,0 +1,174 @@
+# Python CI/CD Pipeline Template
+# This template builds, tests, and deploys Python applications
+
+image: python:3.11-slim
+
+# Define pipeline stages
+stages:
+  - setup
+  - lint
+  - test
+  - build
+  - deploy
+
+# Global variables
+variables:
+  PIP_CACHE_DIR: "$CI_PROJECT_DIR/.pip"
+  PYTHONUNBUFFERED: "1"
+
+# Cache pip packages
+cache:
+  key: ${CI_COMMIT_REF_SLUG}
+  paths:
+    - .pip/
+    - venv/
+
+# Setup Python environment
+setup_environment:
+  stage: setup
+  script:
+    - echo "Setting up Python virtual environment..."
+    - python -m venv venv
+    - source venv/bin/activate
+    - pip install --upgrade pip
+    - pip install -r requirements.txt
+  artifacts:
+    name: "venv-$CI_COMMIT_SHORT_SHA"
+    path: venv/
+    expire_in: 1 hour
+
+# Run code formatting check
+format_check:
+  stage: lint
+  script:
+    - echo "Checking code formatting with Black..."
+    - source venv/bin/activate
+    - black --check .
+  dependencies:
+    - setup_environment
+  allow_failure: true
+
+# Run linting
+lint_code:
+  stage: lint
+  script:
+    - echo "Running Pylint..."
+    - source venv/bin/activate
+    - pylint src/ --exit-zero
+    - flake8 src/
+  dependencies:
+    - setup_environment
+
+# Run type checking
+type_check:
+  stage: lint
+  script:
+    - echo "Running MyPy type checker..."
+    - source venv/bin/activate
+    - mypy src/
+  dependencies:
+    - setup_environment
+  allow_failure: true
+
+# Run unit tests
+unit_tests:
+  stage: test
+  script:
+    - echo "Running unit tests with pytest..."
+    - source venv/bin/activate
+    - pytest tests/unit/ --cov=src --cov-report=html --cov-report=term
+  artifacts:
+    name: "coverage-$CI_COMMIT_SHORT_SHA"
+    path: htmlcov/
+    expire_in: 7 days
+    when: always
+  dependencies:
+    - setup_environment
+
+# Run integration tests
+integration_tests:
+  stage: test
+  script:
+    - echo "Running integration tests..."
+    - source venv/bin/activate
+    - pytest tests/integration/ -v
+  dependencies:
+    - setup_environment
+
+# Security vulnerability scan
+security_scan:
+  stage: test
+  script:
+    - echo "Scanning for security vulnerabilities..."
+    - source venv/bin/activate
+    - pip install safety bandit
+    - safety check --json
+    - bandit -r src/ -f json -o bandit-report.json
+  artifacts:
+    name: "security-report-$CI_COMMIT_SHORT_SHA"
+    path: "*-report.json"
+    expire_in: 30 days
+  dependencies:
+    - setup_environment
+  allow_failure: true
+
+# Build package
+build_package:
+  stage: build
+  script:
+    - echo "Building Python package..."
+    - source venv/bin/activate
+    - python setup.py sdist bdist_wheel
+  artifacts:
+    name: "dist-$CI_COMMIT_SHORT_SHA"
+    path: dist/
+    expire_in: 30 days
+  dependencies:
+    - setup_environment
+
+# Build Docker image
+build_docker:
+  stage: build
+  image: docker:latest
+  services:
+    - docker:dind
+  script:
+    - echo "Building Docker image..."
+    - docker build -t $CI_REGISTRY_IMAGE:$CI_COMMIT_SHORT_SHA .
+    - docker tag $CI_REGISTRY_IMAGE:$CI_COMMIT_SHORT_SHA $CI_REGISTRY_IMAGE:latest
+    - docker push $CI_REGISTRY_IMAGE:$CI_COMMIT_SHORT_SHA
+    - docker push $CI_REGISTRY_IMAGE:latest
+  only:
+    - main
+    - develop
+
+# Deploy to staging
+deploy_staging:
+  stage: deploy
+  script:
+    - echo "Deploying to staging environment..."
+    - source venv/bin/activate
+    - python deploy.py --env staging
+  environment:
+    name: staging
+    url: https://staging-api.example.com
+  dependencies:
+    - build_package
+  only:
+    - develop
+
+# Deploy to production
+deploy_production:
+  stage: deploy
+  script:
+    - echo "Deploying to production environment..."
+    - source venv/bin/activate
+    - python deploy.py --env production
+  environment:
+    name: production
+    url: https://api.example.com
+  dependencies:
+    - build_package
+  only:
+    - main
+  when: manual

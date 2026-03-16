@@ -1,0 +1,139 @@
+# Node.js CI/CD Pipeline Template
+# This template builds, tests, and deploys Node.js applications
+
+image: node:18-alpine
+
+# Define pipeline stages
+stages:
+  - install
+  - lint
+  - test
+  - build
+  - deploy
+
+# Global variables
+variables:
+  NODE_ENV: "production"
+  NPM_CONFIG_CACHE: "$CI_PROJECT_DIR/.npm"
+
+# Cache node_modules between jobs
+cache:
+  key: ${CI_COMMIT_REF_SLUG}
+  paths:
+    - node_modules/
+    - .npm/
+
+# Install dependencies
+install_dependencies:
+  stage: install
+  script:
+    - echo "Installing dependencies..."
+    - npm ci --prefer-offline --no-audit
+  artifacts:
+    name: "node_modules-$CI_COMMIT_SHORT_SHA"
+    path: node_modules/
+    expire_in: 1 hour
+
+# Run linting
+lint_code:
+  stage: lint
+  script:
+    - echo "Running ESLint..."
+    - npm run lint
+  dependencies:
+    - install_dependencies
+
+# Run type checking (TypeScript)
+type_check:
+  stage: lint
+  script:
+    - echo "Running TypeScript type check..."
+    - npm run type-check
+  dependencies:
+    - install_dependencies
+  allow_failure: true
+
+# Run unit tests
+unit_tests:
+  stage: test
+  script:
+    - echo "Running unit tests..."
+    - npm run test:unit -- --coverage
+  artifacts:
+    name: "coverage-$CI_COMMIT_SHORT_SHA"
+    path: coverage/
+    expire_in: 7 days
+    when: always
+  dependencies:
+    - install_dependencies
+  coverage: '/Lines\s*:\s*(\d+\.\d+)%/'
+
+# Run integration tests
+integration_tests:
+  stage: test
+  script:
+    - echo "Running integration tests..."
+    - npm run test:integration
+  dependencies:
+    - install_dependencies
+
+# Run E2E tests
+e2e_tests:
+  stage: test
+  script:
+    - echo "Running E2E tests..."
+    - npm run test:e2e
+  artifacts:
+    name: "test-results-$CI_COMMIT_SHORT_SHA"
+    path: test-results/
+    expire_in: 7 days
+    when: always
+  dependencies:
+    - install_dependencies
+  allow_failure: true
+
+# Build application
+build_app:
+  stage: build
+  script:
+    - echo "Building application..."
+    - npm run build
+  artifacts:
+    name: "build-$CI_COMMIT_SHORT_SHA"
+    path:
+      - dist/
+      - build/
+    expire_in: 30 days
+  dependencies:
+    - install_dependencies
+
+# Deploy to staging
+deploy_staging:
+  stage: deploy
+  script:
+    - echo "Deploying to staging environment..."
+    - npm run deploy:staging
+  environment:
+    name: staging
+    url: https://staging.example.com
+  dependencies:
+    - build_app
+  only:
+    - develop
+    - /^feature\/.*$/
+
+# Deploy to production
+deploy_production:
+  stage: deploy
+  script:
+    - echo "Deploying to production environment..."
+    - npm run deploy:production
+  environment:
+    name: production
+    url: https://example.com
+  dependencies:
+    - build_app
+  only:
+    - main
+    - master
+  when: manual

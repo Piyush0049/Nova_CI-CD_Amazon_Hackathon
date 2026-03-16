@@ -1,0 +1,50 @@
+/* Dark theme styles for React Flow */
+.react-flow__background {
+  background-color: #0f172a !important;
+}
+
+.react-flow__edge-path {
+  stroke: #3b82f6;
+}
+
+.react-flow__controls {
+  background: #1f2937 !important;
+  border: 1px solid #374151 !important;
+}
+
+.react-flow__controls-button {
+  background: #374151 !important;
+  border-bottom: 1px solid #4b5563 !important;
+  color: #e5e7eb !important;
+}
+
+.react-flow__controls-button:hover {
+  background: #4b5563 !important;
+}
+
+.react-flow__controls-button svg {
+  fill: #e5e7eb !important;
+}
+
+.react-flow__minimap {
+  background: #1f2937 !important;
+  border: 1px solid #374151 !important;
+}
+
+.react-flow__attribution {
+  background: rgba(31, 41, 55, 0.8) !important;
+  color: #9ca3af !important;
+}
+
+.react-flow__attribution a {
+  color: #60a5fa !important;
+}
+
+.react-flow__node {
+  border-radius: 8px;
+}
+
+.react-flow__handle {
+  background: #3b82f6 !important;
+  border: 2px solid #1e40af !important;
+}

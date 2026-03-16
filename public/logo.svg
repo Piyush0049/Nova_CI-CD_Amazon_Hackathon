@@ -1,0 +1,27 @@
+<svg width="512" height="512" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="mainGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#22d3ee;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#06b6d4;stop-opacity:1" />
+    </linearGradient>
+  </defs>
+
+  <!-- Simple "N" Shape for Nova -->
+  <g>
+    <!-- Left vertical bar -->
+    <rect x="140" y="140" width="60" height="232" rx="30" fill="url(#mainGradient)"/>
+
+    <!-- Diagonal bar -->
+    <rect x="180" y="200" width="152" height="60" rx="30" fill="url(#mainGradient)" transform="rotate(50 256 256)"/>
+
+    <!-- Right vertical bar -->
+    <rect x="312" y="140" width="60" height="232" rx="30" fill="url(#mainGradient)"/>
+  </g>
+
+  <!-- Nova Star/Sparkle Accent -->
+  <g transform="translate(380, 380)">
+    <circle cx="0" cy="0" r="30" fill="#22d3ee" opacity="0.3"/>
+    <circle cx="0" cy="0" r="20" fill="#22d3ee"/>
+    <circle cx="0" cy="0" r="8" fill="white"/>
+  </g>
+</svg>

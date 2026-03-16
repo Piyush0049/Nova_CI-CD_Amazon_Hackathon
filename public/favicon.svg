@@ -1,0 +1,24 @@
+<svg width="32" height="32" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="faviconGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#22d3ee;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#06b6d4;stop-opacity:1" />
+    </linearGradient>
+  </defs>
+
+  <!-- Simple "N" Shape -->
+  <g fill="url(#faviconGradient)">
+    <!-- Left vertical bar -->
+    <rect x="6" y="6" width="5" height="20" rx="2.5"/>
+
+    <!-- Diagonal bar -->
+    <rect x="8" y="11" width="16" height="5" rx="2.5" transform="rotate(50 16 16)"/>
+
+    <!-- Right vertical bar -->
+    <rect x="21" y="6" width="5" height="20" rx="2.5"/>
+  </g>
+
+  <!-- Small accent dot -->
+  <circle cx="26" cy="26" r="2.5" fill="#22d3ee"/>
+  <circle cx="26" cy="26" r="1" fill="white"/>
+</svg>
