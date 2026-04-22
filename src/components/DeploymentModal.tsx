@@ -316,7 +316,7 @@ export default function DeploymentModal({
 
             {envVars.length === 0 && (
               <p className="text-sm text-muted-foreground text-center py-8">
-                No environment variables added. Click "Paste .env" or "Add Variable" to add.
+                No environment variables added. Click &quot;Paste .env&quot; or &quot;Add Variable&quot; to add.
               </p>
             )}
 
@@ -327,7 +327,7 @@ export default function DeploymentModal({
                 <div className="flex-1 text-sm">
                   <p className="font-semibold text-cyan-500 mb-1">Vercel-Style Bulk Paste</p>
                   <p className="text-muted-foreground">
-                    Click <strong>"Paste .env"</strong> to paste your entire .env file at once. We'll automatically parse all KEY=VALUE pairs for you. Click the eye icon to show/hide values. Environment variables are saved with your pipeline for future deployments.
+                    Click <strong>&quot;Paste .env&quot;</strong> to paste your entire .env file at once. We&apos;ll automatically parse all KEY=VALUE pairs for you. Click the eye icon to show/hide values. Environment variables are saved with your pipeline for future deployments.
                   </p>
                 </div>
               </div>

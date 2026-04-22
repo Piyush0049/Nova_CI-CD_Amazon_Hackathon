@@ -5,7 +5,6 @@
 
 import { BedrockRuntimeClient, ConverseCommand } from '@aws-sdk/client-bedrock-runtime';
 import { UniversalProjectFiles } from './universal-file-fetcher';
-import { extractPortFromSource as enhancedExtractPort, detectPortWithFallback } from './enhanced-port-detector';
 
 const bedrockClient = new BedrockRuntimeClient({
   region: process.env.AWS_REGION || 'us-east-1',
@@ -537,14 +536,102 @@ function parseAnalysis(response: string, files: UniversalProjectFiles): Universa
 }
 
 /**
-
-/**
  * Extract port number from source code
- * NOTE: This now uses the enhanced port detector with better pattern matching
  */
 export function extractPortFromSource(sourceCode: string, language: string): string {
-  return enhancedExtractPort(sourceCode, language);
+  if (!sourceCode) return '';
+
+  console.log('[PORT-DETECTOR] Scanning source code for port number...');
+
+  // Rust patterns
+  if (language === 'Rust') {
+    // Look for .bind("address:port")
+    const bindMatch = sourceCode.match(/\.bind\(['""](?:127\.0\.0\.1|0\.0\.0\.0):(\d+)['""\)]/);
+    if (bindMatch) {
+      console.log('[PORT-DETECTOR] Found Rust port:', bindMatch[1]);
+      return bindMatch[1];
+    }
+    // Look for TcpListener::bind
+    const tcpMatch = sourceCode.match(/TcpListener::bind\(['""](?:127\.0\.0\.1|0\.0\.0\.0):(\d+)['""\)]/);
+    if (tcpMatch) {
+      console.log('[PORT-DETECTOR] Found Rust TCP port:', tcpMatch[1]);
+      return tcpMatch[1];
+    }
+  }
+
+  // Python patterns
+  if (language === 'Python') {
+    // Look for uvicorn.run with port
+    const uvicornMatch = sourceCode.match(/uvicorn\.run\([^)]*port\s*=\s*(\d+)/);
+    if (uvicornMatch) {
+      console.log('[PORT-DETECTOR] Found Python uvicorn port:', uvicornMatch[1]);
+      return uvicornMatch[1];
+    }
+    // Look for app.run with port
+    const flaskMatch = sourceCode.match(/\.run\([^)]*port\s*=\s*(\d+)/);
+    if (flaskMatch) {
+      console.log('[PORT-DETECTOR] Found Python Flask port:', flaskMatch[1]);
+      return flaskMatch[1];
+    }
+    // Look for runserver with port
+    const djangoMatch = sourceCode.match(/runserver\s+(?:0\.0\.0\.0:)?(\d+)/);
+    if (djangoMatch) {
+      console.log('[PORT-DETECTOR] Found Django port:', djangoMatch[1]);
+      return djangoMatch[1];
+    }
+  }
+
+  // Go patterns
+  if (language === 'Go') {
+    // Look for ListenAndServe(":port", ...)
+    const listenMatch = sourceCode.match(/ListenAndServe\(['""][:]+(\d+)["'"]/);
+    if (listenMatch) {
+      console.log('[PORT-DETECTOR] Found Go port:', listenMatch[1]);
+      return listenMatch[1];
+    }
+    // Look for .Run(":port")
+    const runMatch = sourceCode.match(/\.Run\(['""][:]+(\d+)["'"]/);
+    if (runMatch) {
+      console.log('[PORT-DETECTOR] Found Go Router port:', runMatch[1]);
+      return runMatch[1];
+    }
+  }
+
+  // Node.js patterns
+  if (language === 'Node.js' || language === 'Node.js/TypeScript') {
+    // Look for process.env.PORT || 3000
+    const envPortMatch = sourceCode.match(/process\.env\.PORT\s*\|\|\s*(\d+)/);
+    if (envPortMatch) {
+      console.log('[PORT-DETECTOR] Found Node.js env fallback port:', envPortMatch[1]);
+      return envPortMatch[1];
+    }
+
+    // Look for app.set('port', 3000)
+    const setPortMatch = sourceCode.match(/\.set\(['"]port['"]\s*,\s*(\d+)/);
+    if (setPortMatch) {
+      console.log('[PORT-DETECTOR] Found Node.js app.set port:', setPortMatch[1]);
+      return setPortMatch[1];
+    }
+
+    // Look for app.listen(port, ...)
+    const listenMatch = sourceCode.match(/\.listen\(\s*(\d+)/);
+    if (listenMatch) {
+      console.log('[PORT-DETECTOR] Found Node.js app.listen port:', listenMatch[1]);
+      return listenMatch[1];
+    }
+
+    // Look for const port = 3000;
+    const constPortMatch = sourceCode.match(/const\s+port\s*=\s*(\d+)/i);
+    if (constPortMatch) {
+      console.log('[PORT-DETECTOR] Found Node.js const port:', constPortMatch[1]);
+      return constPortMatch[1];
+    }
+  }
+
+  console.log('[PORT-DETECTOR] No port found in source code');
+  return '';
 }
+
 /**
  * Fallback analysis based on simple file detection
  */
@@ -562,7 +649,7 @@ function getFallbackAnalysis(files: UniversalProjectFiles): UniversalProjectAnal
 
     // Try to detect port from source code
     const sourceCode = files.mainRs || files.libRs || '';
-    const detectedPort = detectPortWithFallback(sourceCode, 'Rust', framework);
+    const detectedPort = extractPortFromSource(sourceCode, 'Rust') || '8000';
 
     return {
       language: 'Rust',
@@ -606,7 +693,7 @@ function getFallbackAnalysis(files: UniversalProjectFiles): UniversalProjectAnal
   if (files.goMod) {
     // Try to detect port from source code
     const sourceCode = files.mainGo || '';
-    const detectedPort = detectPortWithFallback(sourceCode, 'Go');
+    const detectedPort = extractPortFromSource(sourceCode, 'Go') || '8080';
 
     return {
       language: 'Go',
@@ -649,7 +736,7 @@ function getFallbackAnalysis(files: UniversalProjectFiles): UniversalProjectAnal
 
     // Try to detect port from source code
     const sourceCode = files.mainPy || files.appPy || '';
-    const detectedPort = detectPortWithFallback(sourceCode, 'Python', framework);
+    const detectedPort = extractPortFromSource(sourceCode, 'Python');
 
     if (deps.includes('fastapi')) {
       framework = 'FastAPI';
@@ -728,7 +815,9 @@ function getFallbackAnalysis(files: UniversalProjectFiles): UniversalProjectAnal
       startCommand = 'node index.js';
     }
 
-    const detectedPort = detectPortWithFallback(undefined, 'Node.js/TypeScript', framework);
+    // Try to detect port from source code
+    const sourceCode = files.indexJs || files.serverJs || files.appJs || files.indexTs || files.serverTs || '';
+    const detectedPort = extractPortFromSource(sourceCode, 'Node.js/TypeScript') || '3000';
 
     return {
       language: 'Node.js/TypeScript',

@@ -117,31 +117,10 @@ export async function POST(request: NextRequest) {
     console.log('[SMART-DEPLOY] Saved Port:', savedPipeline.port || 'NOT SET');
     console.log('[SMART-DEPLOY] Saved Start Command:', savedPipeline.startCommand || 'NOT SET');
 
-    // ✨ SMART VALIDATION: Detect language/command mismatches and trigger re-analysis
-    // This ensures we always use the correct port and command, even if saved data is wrong
-    const needsReanalysis = !savedPipeline.port || !savedPipeline.startCommand ||
-      // Python app using Node.js commands → INVALID
-      (savedPipeline.language?.includes('Python') && savedPipeline.startCommand?.includes('npm')) ||
-      // Node.js app using Python commands → INVALID
-      (savedPipeline.language?.includes('Node') && (savedPipeline.startCommand?.includes('python') || savedPipeline.startCommand?.includes('uvicorn'))) ||
-      // FastAPI with port 3000 (should be 8000) → LIKELY WRONG
-      (savedPipeline.framework?.includes('FastAPI') && savedPipeline.port === '3000') ||
-      // Flask with port 3000 (should be 5000) → LIKELY WRONG
-      (savedPipeline.framework?.includes('Flask') && savedPipeline.port === '3000') ||
-      // Direct check: Python with npm start → DEFINITELY WRONG
-      (savedPipeline.language?.includes('Python') && savedPipeline.startCommand === 'npm start');
-
-    if (needsReanalysis) {
-      if (!savedPipeline.port || !savedPipeline.startCommand) {
-        console.log('[SMART-DEPLOY] ⚠️ Port or startCommand not found in saved pipeline - re-analyzing repository...');
-      } else {
-        console.log('[SMART-DEPLOY] 🚨 VALIDATION FAILED: Language/command mismatch detected!');
-        console.log('[SMART-DEPLOY]   Language:', savedPipeline.language);
-        console.log('[SMART-DEPLOY]   Framework:', savedPipeline.framework);
-        console.log('[SMART-DEPLOY]   Saved Port:', savedPipeline.port, '← INCORRECT');
-        console.log('[SMART-DEPLOY]   Saved Command:', savedPipeline.startCommand, '← INCORRECT');
-        console.log('[SMART-DEPLOY] → Re-analyzing repository with AI to fix incorrect values...');
-      }
+    // Re-analyze repository to get port and startCommand if missing or outdated
+    // This ensures we always use the current codebase's port, even if the pipeline was created before this feature was added
+    if (!savedPipeline.port || !savedPipeline.startCommand) {
+      console.log('[SMART-DEPLOY] ⚠️ Port or startCommand not found in saved pipeline - re-analyzing repository...');
 
       try {
         // Import required modules for re-analysis
@@ -157,43 +136,25 @@ export async function POST(request: NextRequest) {
         const analysis = await analyzeUniversalProject(projectFiles);
 
         console.log('[SMART-DEPLOY] ✅ Re-analysis complete:');
-        console.log('[SMART-DEPLOY]   - Detected Language:', analysis.language);
-        console.log('[SMART-DEPLOY]   - Detected Framework:', analysis.framework);
-        console.log('[SMART-DEPLOY]   - Detected Port:', analysis.port, '← CORRECTED');
-        console.log('[SMART-DEPLOY]   - Detected Start Command:', analysis.startCommand, '← CORRECTED');
+        console.log('[SMART-DEPLOY]   - Detected Port:', analysis.port);
+        console.log('[SMART-DEPLOY]   - Detected Start Command:', analysis.startCommand);
 
         // Update the saved pipeline with the detected values
-        savedPipeline.language = analysis.language;
-        savedPipeline.framework = analysis.framework;
-        savedPipeline.port = analysis.port || '8000';
-        savedPipeline.startCommand = analysis.startCommand || 'echo "No start command"';
+        savedPipeline.port = analysis.port || '3000';
+        savedPipeline.startCommand = analysis.startCommand || 'npm start';
 
         // Save to database
         await Pipeline.findByIdAndUpdate(savedPipeline._id, {
-          language: savedPipeline.language,
-          framework: savedPipeline.framework,
           port: savedPipeline.port,
           startCommand: savedPipeline.startCommand,
         });
 
-        console.log('[SMART-DEPLOY] ✅ Updated pipeline with corrected port and startCommand');
+        console.log('[SMART-DEPLOY] ✅ Updated pipeline with detected port and startCommand');
       } catch (reAnalysisError: any) {
         console.error('[SMART-DEPLOY] ⚠️ Re-analysis failed:', reAnalysisError.message);
-        console.log('[SMART-DEPLOY] Falling back to framework-specific defaults');
-        // Smart defaults based on detected framework
-        if (savedPipeline.framework?.includes('FastAPI')) {
-          savedPipeline.port = '8000';
-          savedPipeline.startCommand = 'uvicorn main:app --host 0.0.0.0 --port 8000';
-        } else if (savedPipeline.framework?.includes('Flask')) {
-          savedPipeline.port = '5000';
-          savedPipeline.startCommand = 'python app.py';
-        } else if (savedPipeline.language?.includes('Python')) {
-          savedPipeline.port = '8000';
-          savedPipeline.startCommand = 'python main.py';
-        } else {
-          savedPipeline.port = '3000';
-          savedPipeline.startCommand = 'npm start';
-        }
+        console.log('[SMART-DEPLOY] Falling back to defaults: port=3000, startCommand=npm start');
+        savedPipeline.port = '3000';
+        savedPipeline.startCommand = 'npm start';
       }
     }
 
@@ -475,25 +436,25 @@ chmod 600 .env`
     console.log('[SMART-DEPLOY] Starting 60s setup countdown...');
     for (let i = 1; i <= 12; i++) {
       const progress = Math.round((i / 12) * 100);
+      const dots = ".".repeat(i);
       const bar = "█".repeat(i) + "░".repeat(12 - i);
-      const spinner = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'][i % 10];
-
+      
       if (deploymentRecord) {
         try {
           const current = await Deployment.findById(deploymentRecord._id);
           const currentLogs = current?.rawLogs || '';
-
+          
           // Only append the progress line once or replace the previous one
           const baseLogs = currentLogs.split('\n').filter(line => !line.includes('[PROGRESS]')).join('\n');
-
+          
           await Deployment.findByIdAndUpdate(deploymentRecord._id, {
-            rawLogs: baseLogs + `\n[SMART-DEPLOY] [PROGRESS] ${spinner} [${bar}] ${progress}% - Environment initialization`,
+            rawLogs: baseLogs + `\n[SMART-DEPLOY] [PROGRESS] [${bar}] ${progress}% - Environment initialization in progress${dots}`,
           });
         } catch (dbError) {
           console.error('[SMART-DEPLOY] Failed to update progress logs:', dbError);
         }
       }
-
+      
       await new Promise((resolve) => setTimeout(resolve, 5000));
     }
 
@@ -545,62 +506,48 @@ chmod 600 .env`
     };
 
     // Step 3.6: PRE-FLIGHT CHECKS - Fix common issues BEFORE attempting build (like Vercel does)
-    // SKIP FOR NON-NODE.JS PROJECTS (Rust, Go, Python, etc.)
-    const isNodeProject = savedPipeline.language?.includes('JavaScript') ||
-                          savedPipeline.language?.includes('TypeScript') ||
-                          savedPipeline.language?.includes('Node');
-
-    if (!isNodeProject) {
-      console.log('[SMART-DEPLOY] ========================================');
-      console.log('[SMART-DEPLOY] SKIPPING Pre-flight checks for ' + savedPipeline.language);
-      console.log('[SMART-DEPLOY] Language:', savedPipeline.language);
-      console.log('[SMART-DEPLOY] Framework:', savedPipeline.framework);
-      console.log('[SMART-DEPLOY] Pre-flight checks are Node.js-specific');
-      console.log('[SMART-DEPLOY] ========================================');
-      console.log('');
-    } else {
-      console.log('[SMART-DEPLOY] Running pre-flight checks for Node.js project...');
-      const preFlightResult = await executeSSMCommand(instanceId, [
-        'cd /home/ec2-user/app',
-        'export CI=true',
-        'export NODE_ENV=production',
-        '',
-        'echo "════════════════════════════════════════════════════════════"',
-        'echo "PRE-FLIGHT CHECKS - Vercel-Style Proactive Fixes"',
-        'echo "════════════════════════════════════════════════════════════"',
-        '',
-        '# 0. VERIFY NODE.JS VERSION',
-        'echo "[PRE-FLIGHT] 0/8: Verifying Node.js version..."',
-        'CURRENT_NODE_VERSION=$(node -v | sed "s/v//")',
-        'MAJOR_VERSION=$(echo $CURRENT_NODE_VERSION | cut -d. -f1)',
-        'echo "  ℹ️  Current Node.js version: v$CURRENT_NODE_VERSION"',
-        '',
-        'if [ "$MAJOR_VERSION" -lt 20 ]; then',
-        '  echo "  ⚠️  Node.js $MAJOR_VERSION detected - upgrading to v20 LTS..."',
-        '  echo "  → This is required for Next.js 16+ and modern frameworks"',
-        '  ',
-        '  # Install NVM (Node Version Manager)',
-        '  if [ ! -d "$HOME/.nvm" ]; then',
-        '    echo "  → Installing NVM..."',
-        '    curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash',
-        '  fi',
-        '  ',
-        '  # Load NVM',
-        '  export NVM_DIR="$HOME/.nvm"',
-        '  [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"',
-        '  ',
-        '  # Install and use Node.js 20',
-        '  echo "  → Installing Node.js 20 LTS..."',
-        '  nvm install 20',
-        '  nvm use 20',
-        '  nvm alias default 20',
-        '  ',
-        '  # Verify upgrade',
-        '  NEW_VERSION=$(node -v)',
-        '  echo "  ✅ Upgraded to Node.js $NEW_VERSION"',
-        'else',
-        '  echo "  ✅ Node.js version is compatible (v$MAJOR_VERSION >= 20)"',
-        'fi',
+    console.log('[SMART-DEPLOY] Running pre-flight checks and fixes...');
+    const preFlightResult = await executeSSMCommand(instanceId, [
+      'cd /home/ec2-user/app',
+      'export CI=true',
+      'export NODE_ENV=production',
+      '',
+      'echo "════════════════════════════════════════════════════════════"',
+      'echo "PRE-FLIGHT CHECKS - Vercel-Style Proactive Fixes"',
+      'echo "════════════════════════════════════════════════════════════"',
+      '',
+      '# 0. VERIFY NODE.JS VERSION',
+      'echo "[PRE-FLIGHT] 0/8: Verifying Node.js version..."',
+      'CURRENT_NODE_VERSION=$(node -v | sed "s/v//")',
+      'MAJOR_VERSION=$(echo $CURRENT_NODE_VERSION | cut -d. -f1)',
+      'echo "  ℹ️  Current Node.js version: v$CURRENT_NODE_VERSION"',
+      '',
+      'if [ "$MAJOR_VERSION" -lt 20 ]; then',
+      '  echo "  ⚠️  Node.js $MAJOR_VERSION detected - upgrading to v20 LTS..."',
+      '  echo "  → This is required for Next.js 16+ and modern frameworks"',
+      '  ',
+      '  # Install NVM (Node Version Manager)',
+      '  if [ ! -d "$HOME/.nvm" ]; then',
+      '    echo "  → Installing NVM..."',
+      '    curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash',
+      '  fi',
+      '  ',
+      '  # Load NVM',
+      '  export NVM_DIR="$HOME/.nvm"',
+      '  [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"',
+      '  ',
+      '  # Install and use Node.js 20',
+      '  echo "  → Installing Node.js 20 LTS..."',
+      '  nvm install 20',
+      '  nvm use 20',
+      '  nvm alias default 20',
+      '  ',
+      '  # Verify upgrade',
+      '  NEW_VERSION=$(node -v)',
+      '  echo "  ✅ Upgraded to Node.js $NEW_VERSION"',
+      'else',
+      '  echo "  ✅ Node.js version is compatible (v$MAJOR_VERSION >= 20)"',
+      'fi',
       'echo ""',
       '',
       '# 1. FIX JSX FILE EXTENSIONS (Most common issue)',
@@ -1000,23 +947,8 @@ chmod 600 .env`
       'fi',
       '',
       '# React Projects (CRA, Vite)',
-      'if grep -E "react-scripts|vite|@vitejs" package.json 2>/dev/null; then',
+      'if grep -q "react-scripts\\|\\"vite\\"\\|@vitejs" package.json 2>/dev/null; then',
       '  echo "  → React project detected"',
-      '  ',
-      '  # Create React App (CRA) - Fix missing Babel plugin',
-      '  if grep -q "react-scripts" package.json 2>/dev/null; then',
-      '    echo "    ✓ Create React App detected"',
-      '    ',
-      '    # Check for missing @babel/plugin-proposal-private-property-in-object',
-      '    if ! grep -q "@babel/plugin-proposal-private-property-in-object" package.json 2>/dev/null; then',
-      '      echo "    ⚠️  Missing @babel/plugin-proposal-private-property-in-object"',
-      '      echo "    → Installing Babel plugin..."',
-      '      npm install --save-dev @babel/plugin-proposal-private-property-in-object --legacy-peer-deps --loglevel=error 2>&1 | tail -1',
-      '      echo "    ✅ Babel plugin installed"',
-      '    else',
-      '      echo "    ✓ Babel plugin already present"',
-      '    fi',
-      '  fi',
       '  ',
       '  # Vite-specific',
       '  if grep -q "\\"vite\\"" package.json 2>/dev/null; then',
@@ -1067,12 +999,12 @@ chmod 600 .env`
       '  echo "  ✅ Angular dependencies checked"',
       'fi',
       '',
-      '# Re-install if we modified package.json',
+      '# Delete package-lock.json if we modified package.json',
       'if [ "$NEEDS_PACKAGE_LOCK_REFRESH" = true ]; then',
-      '  echo "  → Package.json updated - reinstalling dependencies..."',
+      '  echo "  → Package.json updated - removing package-lock.json"',
+      '  echo "  → npm install will regenerate with all new dependencies"',
       '  rm -f package-lock.json',
-      '  npm install --legacy-peer-deps --loglevel=error 2>&1 | tail -3',
-      '  echo "  ✅ Dependencies reinstalled with new packages"',
+      '  echo "  ✅ Ready for fresh install with complete dependencies"',
       'fi',
       '',
       '# 3. ENSURE PROPER VITE CONFIGURATION',
@@ -1286,16 +1218,13 @@ chmod 600 .env`
       '  echo "✅ No @tailwindcss/vite references found"',
       'fi',
       'echo ""',
-      ]);
+    ]);
 
-      console.log('[SMART-DEPLOY] Pre-flight checks completed');
-      console.log('[SMART-DEPLOY] Pre-flight output:', preFlightResult.output.slice(-1000));
-    }
+    console.log('[SMART-DEPLOY] Pre-flight checks completed');
+    console.log('[SMART-DEPLOY] Pre-flight output:', preFlightResult.output.slice(-1000));
 
     // Step 4: Run deployment stages via SSM with AI auto-fix
     console.log('[SMART-DEPLOY] Running deployment stages...');
-    console.log('[SMART-DEPLOY] Language:', savedPipeline.language);
-    console.log('[SMART-DEPLOY] Framework:', savedPipeline.framework);
     const deploymentResult = await runStagesWithAutoFix(
       instanceId,
       pipeline,
@@ -1304,8 +1233,7 @@ chmod 600 .env`
       envVars,
       projectAnalysis,
       buildConfig,  // Pass AI-generated build config
-      deploymentRecord,  // Pass deployment record for real-time log updates
-      savedPipeline.language  // Pass language to skip Node.js setup for non-Node projects
+      deploymentRecord  // Pass deployment record for real-time log updates
     );
 
     // Collect all logs from all stages
@@ -1743,19 +1671,9 @@ async function runStagesWithAutoFix(
   envVars: Record<string, string> = {},
   projectAnalysis?: ProjectAnalysis,
   buildConfig?: FrameworkBuildConfig,
-  deploymentRecord?: any,  // For real-time log updates
-  language?: string  // Language to determine environment setup
+  deploymentRecord?: any  // For real-time log updates
 ): Promise<{ success: boolean; error?: string; logs: string[] }> {
   const allLogs: string[] = [];
-
-  // Determine if this is a Node.js project
-  const isNodeProject = language?.includes('JavaScript') ||
-                        language?.includes('TypeScript') ||
-                        language?.includes('Node');
-
-  console.log(`[STAGES] Project language: ${language || 'Unknown'}`);
-  console.log(`[STAGES] Is Node.js project: ${isNodeProject}`);
-
   for (let i = 0; i < pipeline.stages.length; i++) {
     const stageName = pipeline.stages[i];
     const stageJobs = pipeline.jobs.filter((j: any) => j.stage === stageName);
@@ -1770,31 +1688,14 @@ async function runStagesWithAutoFix(
       'cd /home/ec2-user/app',
       'sudo chown -R ec2-user:ec2-user /home/ec2-user/app || true',
       'export CI=true',
+      'export NODE_ENV=production',
+      'export PATH="$PATH:/home/ec2-user/app/node_modules/.bin"',
     ];
 
-    // Add Node.js-specific environment ONLY for Node.js projects
-    if (isNodeProject) {
-      envSetupCommands.push('export NODE_ENV=production');
-      envSetupCommands.push('export PATH="$PATH:/home/ec2-user/app/node_modules/.bin"');
-      // Global memory optimization for node-based builds
-      envSetupCommands.push(`export NODE_OPTIONS="--max-old-space-size=4096"`);
-    } else {
-      console.log(`[STAGE ${i + 1}/${pipeline.stages.length}] Skipping Node.js environment (language: ${language})`);
-      // Add language-specific environment setup
-      if (language?.includes('Rust')) {
-        envSetupCommands.push('export HOME=/home/ec2-user');
-        envSetupCommands.push('source /home/ec2-user/.cargo/env 2>/dev/null || true');
-        envSetupCommands.push('export PATH="$PATH:/home/ec2-user/.cargo/bin"');
-      } else if (language?.includes('Go')) {
-        envSetupCommands.push('export PATH="$PATH:/usr/local/go/bin"');
-        envSetupCommands.push('export GOPATH=/home/ec2-user/go');
-      } else if (language?.includes('Python')) {
-        envSetupCommands.push('export PYTHONUNBUFFERED=1');
-        envSetupCommands.push('export PATH="$PATH:/home/ec2-user/.local/bin"');
-      }
-    }
-
     // Export environment variables if provided
+    // Global memory optimization for node-based builds
+    envSetupCommands.push(`export NODE_OPTIONS="--max-old-space-size=4096"`);
+
     if (Object.keys(envVars).length > 0) {
       console.log(`[STAGE ${i + 1}/${pipeline.stages.length}] Exporting ${Object.keys(envVars).length} environment variables`);
       Object.entries(envVars).forEach(([key, value]) => {
@@ -3203,18 +3104,11 @@ async function executeSSMCommand(
   deploymentId?: string
 ): Promise<{ success: boolean; output: string; error: string }> {
   try {
-    // CRITICAL FIX: Combine all commands into a SINGLE shell script
-    // AWS SSM runs each array element in a SEPARATE shell session, which breaks:
-    // - Environment variable exports (PATH, NODE_ENV, etc.)
-    // - Inline variable assignments (PATH="..." npm run build)
-    // Solution: Join all commands with newlines and run as ONE command
-    const singleScript = commands.join('\n');
-
     const sendCmd = await ssmClient.send(
       new SendCommandCommand({
         InstanceIds: [instanceId],
         DocumentName: 'AWS-RunShellScript',
-        Parameters: { commands: [singleScript] }, // Single script instead of array
+        Parameters: { commands },
         TimeoutSeconds: timeoutSeconds,
       })
     );

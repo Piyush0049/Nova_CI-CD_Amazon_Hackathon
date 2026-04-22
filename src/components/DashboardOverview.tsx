@@ -45,7 +45,7 @@ export default function DashboardOverview({
             </div>
             <div>
               <h1 className="text-4xl font-bold text-white mb-1">
-                Welcome to Nova CI/CD
+                Welcome to NerveFlow CI/CD
               </h1>
               <p className="text-cyan-100 text-lg">
                 Automate your deployment pipeline with AI-powered intelligence
@@ -176,7 +176,7 @@ export default function DashboardOverview({
           <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-pink-500 to-rose-500 flex items-center justify-center mb-4 shadow-lg">
             <Sparkles className="w-6 h-6 text-white" />
           </div>
-          <h3 className="text-xl font-semibold mb-2">Nova AI Assistant</h3>
+          <h3 className="text-xl font-semibold mb-2">NerveFlow Assistant</h3>
           <p className="text-muted-foreground text-sm">
             Chat with our AI assistant to create custom pipelines, troubleshoot issues, and optimize your workflow.
           </p>

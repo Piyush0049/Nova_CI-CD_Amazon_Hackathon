@@ -138,7 +138,7 @@ export default function YamlGeneratorPage() {
         >
           <div className="inline-flex items-center gap-2 px-4 py-2 bg-purple-100 dark:bg-purple-900/30 text-purple-700 dark:text-purple-300 rounded-full text-sm font-medium mb-4">
             <FiZap className="animate-pulse" />
-            Powered by Amazon Nova AI
+            Powered by Claude 4.6 Sonnet AI
           </div>
           <h1 className="text-5xl font-bold mb-4 bg-gradient-to-r from-purple-600 to-blue-600 bg-clip-text text-transparent">
             AI Pipeline Generator
@@ -378,7 +378,7 @@ export default function YamlGeneratorPage() {
             <div className="bg-white dark:bg-gray-800 rounded-xl p-6 shadow-lg">
               <h3 className="font-bold text-lg mb-2">AI-Optimized</h3>
               <p className="text-gray-600 dark:text-gray-400 text-sm">
-                Amazon Nova Pro AI analyzes your code and generates best-practice pipelines
+                Claude 4.6 Sonnet Pro AI analyzes your code and generates best-practice pipelines
               </p>
             </div>
             <div className="bg-white dark:bg-gray-800 rounded-xl p-6 shadow-lg">

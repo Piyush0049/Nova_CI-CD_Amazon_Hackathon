@@ -102,11 +102,9 @@ async function installRuntime(
       'echo "[RUNTIME] Installing Rust toolchain..."',
       // CRITICAL: Set HOME explicitly because SSM commands don't have $HOME set by default
       'export HOME=/home/ec2-user',
-      'curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable',
+      'curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y',
       // Use absolute path instead of $HOME to avoid "/.cargo/env: No such file or directory"
       'source /home/ec2-user/.cargo/env',
-      'rustup default stable',
-      'echo "[RUNTIME] ✅ Rust toolchain configured"',
       'echo "[RUNTIME] Verifying Rust installation..."',
       'rustc --version',
       'cargo --version',
@@ -277,9 +275,12 @@ async function buildProject(
     'echo "[BUILD] Build completed successfully"',
   );
 
-  // Verify build output (simplified)
+  // Verify build output
   if (analysis.outputDir !== 'NONE') {
-    commands.push(`test -d ${analysis.outputDir} && echo "[BUILD] ✅ Output verified" || echo "[BUILD] ⚠️ Output not found"`);
+    commands.push(
+      `echo "[BUILD] Verifying output directory: ${analysis.outputDir}"`,
+      `ls -lah ${analysis.outputDir}/ 2>/dev/null || echo "Output directory not found"`,
+    );
   }
 
   return await executeSSMCommand(instanceId, commands, stage, onProgress, 900); // 15 min timeout for builds

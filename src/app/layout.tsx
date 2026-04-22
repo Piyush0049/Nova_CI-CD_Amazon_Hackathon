@@ -16,13 +16,13 @@ const plusJakarta = Plus_Jakarta_Sans({
 });
 
 export const metadata: Metadata = {
-  title: "Nova CI/CD Platform - AI-Powered Pipeline Generation",
+  title: "NerveFlow CI/CD Platform - AI-Powered Pipeline Generation",
   description:
-    "Automatically generate and deploy CI/CD pipelines to AWS EC2 using Amazon Nova AI. Connect your GitHub repositories and deploy with one click. Modern, intelligent, and efficient.",
+    "Automatically generate and deploy CI/CD pipelines to AWS EC2 using Claude 4.6 Sonnet AI. Connect your GitHub repositories and deploy with one click. Modern, intelligent, and efficient.",
   keywords: [
     "CI/CD",
     "pipeline automation",
-    "Amazon Nova",
+    "Claude 4.6 Sonnet",
     "AWS EC2 deployment",
     "GitHub integration",
     "DevOps automation",
@@ -30,9 +30,9 @@ export const metadata: Metadata = {
     "continuous integration",
     "continuous deployment",
   ],
-  authors: [{ name: "Nova CI/CD Platform" }],
-  creator: "Nova CI/CD Platform",
-  publisher: "Nova CI/CD Platform",
+  authors: [{ name: "NerveFlow CI/CD Platform" }],
+  creator: "NerveFlow CI/CD Platform",
+  publisher: "NerveFlow CI/CD Platform",
   icons: {
     icon: [
       { url: "/favicon.svg", type: "image/svg+xml" },
@@ -44,22 +44,22 @@ export const metadata: Metadata = {
   },
   openGraph: {
     type: "website",
-    title: "Nova CI/CD Platform - AI-Powered Pipeline Generation",
-    description: "Automatically generate and deploy CI/CD pipelines to AWS EC2 using Amazon Nova AI",
-    siteName: "Nova CI/CD Platform",
+    title: "NerveFlow CI/CD Platform - AI-Powered Pipeline Generation",
+    description: "Automatically generate and deploy CI/CD pipelines to AWS EC2 using Claude 4.6 Sonnet AI",
+    siteName: "NerveFlow CI/CD Platform",
     images: [
       {
         url: "/logo.svg",
         width: 512,
         height: 512,
-        alt: "Nova CI/CD Platform Logo",
+        alt: "NerveFlow CI/CD Platform Logo",
       },
     ],
   },
   twitter: {
     card: "summary_large_image",
-    title: "Nova CI/CD Platform - AI-Powered Pipeline Generation",
-    description: "Automatically generate and deploy CI/CD pipelines to AWS EC2 using Amazon Nova AI",
+    title: "NerveFlow CI/CD Platform - AI-Powered Pipeline Generation",
+    description: "Automatically generate and deploy CI/CD pipelines to AWS EC2 using Claude 4.6 Sonnet AI",
     images: ["/logo.svg"],
   },
 };

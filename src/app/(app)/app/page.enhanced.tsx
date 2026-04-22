@@ -236,7 +236,7 @@ export default function AppPageEnhanced() {
                 AI Operator
               </h1>
               <p className="text-xs text-muted-foreground">
-                Powered by Amazon Nova
+                Powered by Claude 4.6 Sonnet
               </p>
             </div>
           </div>

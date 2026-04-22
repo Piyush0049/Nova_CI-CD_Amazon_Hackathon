@@ -74,6 +74,7 @@ export interface LanguageDetectionResult {
   hasLinter: boolean;
   entryPoint?: string;
   detectedFiles: string[];
+  port?: string;
 }
 
 /**
@@ -216,6 +217,7 @@ export function detectLanguageAndFramework(files: ProjectFiles): LanguageDetecti
       hasTests: !!pkg.scripts?.test,
       hasLinter: !!pkg.scripts?.lint,
       detectedFiles,
+      port: '3000',
     };
   }
 
@@ -250,6 +252,7 @@ export function detectLanguageAndFramework(files: ProjectFiles): LanguageDetecti
       hasLinter: files.requirementsTxt?.includes('flake8') || files.requirementsTxt?.includes('pylint') || false,
       entryPoint,
       detectedFiles,
+      port: '8000',
     };
   }
 
@@ -264,6 +267,7 @@ export function detectLanguageAndFramework(files: ProjectFiles): LanguageDetecti
       hasTests: true,
       hasLinter: true,
       detectedFiles,
+      port: '8080',
     };
   }
 
@@ -278,6 +282,7 @@ export function detectLanguageAndFramework(files: ProjectFiles): LanguageDetecti
       hasTests: true,
       hasLinter: false,
       detectedFiles,
+      port: '8080',
     };
   }
 
@@ -294,6 +299,7 @@ export function detectLanguageAndFramework(files: ProjectFiles): LanguageDetecti
       hasTests: true,
       hasLinter: false,
       detectedFiles,
+      port: '8080',
     };
   }
 
@@ -308,6 +314,7 @@ export function detectLanguageAndFramework(files: ProjectFiles): LanguageDetecti
       hasTests: files.gemfile.includes('rspec') || false,
       hasLinter: false,
       detectedFiles,
+      port: '3000',
     };
   }
 
@@ -327,6 +334,7 @@ export function detectLanguageAndFramework(files: ProjectFiles): LanguageDetecti
       hasTests: !!composer.require?.['phpunit/phpunit'],
       hasLinter: false,
       detectedFiles,
+      port: '8000',
     };
   }
 
@@ -341,6 +349,7 @@ export function detectLanguageAndFramework(files: ProjectFiles): LanguageDetecti
       hasTests: false,
       hasLinter: false,
       detectedFiles,
+      port: '80', // Default fallback for raw docker exposed ports
     };
   }
 
@@ -350,5 +359,6 @@ export function detectLanguageAndFramework(files: ProjectFiles): LanguageDetecti
     hasTests: false,
     hasLinter: false,
     detectedFiles: [],
+    port: '3000', // Safe default
   };
 }

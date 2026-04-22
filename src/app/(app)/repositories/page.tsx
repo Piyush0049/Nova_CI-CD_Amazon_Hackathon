@@ -114,7 +114,7 @@ export default function RepositoriesPage() {
                 <h2 className="text-2xl font-bold mb-2">Connect GitHub Account</h2>
                 <p className="text-muted-foreground">
                   Connect your GitHub account to automatically create AI-powered CI/CD pipelines
-                  for your repositories using Amazon Nova
+                  for your repositories using Claude 4.6 Sonnet
                 </p>
               </div>
               <button

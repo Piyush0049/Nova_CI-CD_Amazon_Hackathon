@@ -10,6 +10,7 @@ import {
   generatePM2Commands,
   ProjectDetectionResult,
 } from './config-generator';
+import { extractPortFromSource } from '../universal-language-analyzer';
 
 const ssmClient = new SSMClient({
   region: process.env.AWS_REGION || 'us-east-1',
@@ -151,6 +152,17 @@ export async function detectProjectTypeFromInstance(
     'test -f next.config.mjs && echo "HAS_NEXT_CONFIG=true"',
     'test -f webpack.config.js && echo "HAS_WEBPACK_CONFIG=true"',
     'echo "===CONFIG_FILES_END==="',
+    '',
+    '# Fetch entry point files for port detection',
+    'echo "===ENTRY_FILES_START==="',
+    'for f in index.js server.js app.js index.ts server.ts app.ts src/main.rs src/lib.rs main.go main.py app.py; do',
+    '  if [ -f "$f" ]; then',
+    '    echo "FILE:$f"',
+    '    head -n 200 "$f" | base64',
+    '    echo "END_FILE"',
+    '  fi',
+    'done',
+    'echo "===ENTRY_FILES_END==="',
   ];
 
   const result = await executeSSMCommand(instanceId, fetchCommands, 60);
@@ -193,6 +205,39 @@ export async function detectProjectTypeFromInstance(
   const hasNextConfig = output.includes('HAS_NEXT_CONFIG=true');
   const hasWebpackConfig = output.includes('HAS_WEBPACK_CONFIG=true');
 
+  // Extract entry files and detect port
+  let detectedPort: number | undefined;
+  const entryFilesMatch = output.match(/===ENTRY_FILES_START===\n([\s\S]*?)\n===ENTRY_FILES_END===/);
+  if (entryFilesMatch) {
+    const entryFilesContent = entryFilesMatch[1];
+    const fileBlocks = entryFilesContent.split('END_FILE');
+
+    for (const block of fileBlocks) {
+      const fileMatch = block.match(/FILE:(.*)\n([\s\S]*)/);
+      if (fileMatch) {
+        const fileName = fileMatch[1].trim();
+        const base64Content = fileMatch[2].trim();
+
+        try {
+          const content = Buffer.from(base64Content, 'base64').toString('utf-8');
+          let language = 'Node.js';
+          if (fileName.endsWith('.rs')) language = 'Rust';
+          else if (fileName.endsWith('.go')) language = 'Go';
+          else if (fileName.endsWith('.py')) language = 'Python';
+
+          const portStr = extractPortFromSource(content, language);
+          if (portStr) {
+            detectedPort = parseInt(portStr, 10);
+            console.log(`[NGINX-DEPLOY] 🔍 Detected port ${detectedPort} from ${fileName}`);
+            break; // Found a port, stop searching
+          }
+        } catch (e) {
+          console.error(`[NGINX-DEPLOY] Error decoding file ${fileName}:`, e);
+        }
+      }
+    }
+  }
+
   // Detect project deployment type
   const detection = detectProjectDeploymentType(
     repoFiles.packageJson,
@@ -201,7 +246,8 @@ export async function detectProjectTypeFromInstance(
     repoFiles.goMod,
     hasViteConfig,
     hasNextConfig,
-    hasWebpackConfig
+    hasWebpackConfig,
+    detectedPort
   );
 
   return detection;
@@ -319,13 +365,17 @@ export async function verifyBuildOutput(
 
   const verifyCommands = [
     `# Verify build output directory`,
-    `if [ -d "${buildOutputDir}" ]; then`,
-    `  echo "[VERIFY] ✅ Build output directory exists: ${buildOutputDir}"`,
-    `  FILE_COUNT=$(find ${buildOutputDir} -type f | wc -l)`,
+    `REAL_DIR="${buildOutputDir}"`,
+    `if [ ! -d "$REAL_DIR" ] && [ -d "/home/ec2-user/app/dist" ]; then`,
+    `  REAL_DIR="/home/ec2-user/app/dist"`,
+    `fi`,
+    `if [ -d "$REAL_DIR" ]; then`,
+    `  echo "[VERIFY] ✅ Build output directory exists: $REAL_DIR"`,
+    `  FILE_COUNT=$(find "$REAL_DIR" -type f | wc -l)`,
     `  echo "[VERIFY] Files in build directory: $FILE_COUNT"`,
-    `  ls -lh ${buildOutputDir} | head -20`,
+    `  ls -lh "$REAL_DIR" | head -20`,
     `else`,
-    `  echo "[VERIFY] ❌ Build output directory NOT FOUND: ${buildOutputDir}"`,
+    `  echo "[VERIFY] ❌ Build output directory NOT FOUND: ${buildOutputDir} (also tried dist/)"`,
     `  echo "[VERIFY] Available directories:"`,
     `  ls -la /home/ec2-user/app/`,
     `  exit 1`,

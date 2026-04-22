@@ -96,12 +96,12 @@ export default function AutoFixButton({
         {isFixing ? (
           <>
             <FaSpinner className="w-4 h-4 animate-spin" />
-            Running Nova AI Auto-Fix...
+            Running NerveFlow Auto-Fix...
           </>
         ) : (
           <>
             <FaMagic className="w-4 h-4" />
-             Auto-Fix with Nova AI
+             Auto-Fix with Claude 4.6 Sonnet
           </>
         )}
       </Button>

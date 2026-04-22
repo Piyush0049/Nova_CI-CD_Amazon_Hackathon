@@ -8,6 +8,7 @@ import Button from '@/components/ui/Button';
 import { FaServer, FaClock, FaCheck, FaTimes, FaExternalLinkAlt, FaGithub, FaAws } from 'react-icons/fa';
 import AppLayout from '@/components/AppLayout';
 import Loader from '@/components/Loader';
+import DeploymentMonitorButton from '@/components/DeploymentMonitorButton';
 
 interface Deployment {
   _id: string;
@@ -219,21 +220,32 @@ export default function DeploymentsPage() {
                   </div>
 
                   {/* Actions */}
-                  {deployment.status === 'success' && deployment.publicIp && (
-                    <Button
-                      type="button"
-                      variant="primary"
-                      size="sm"
-                      onClick={() => {
-                        const url = deployment.port ? `http://${deployment.publicIp}:${deployment.port}` : `http://${deployment.publicIp}`;
-                        window.open(url, '_blank');
-                      }}
-                      className="flex items-center gap-2"
-                    >
-                      <FaExternalLinkAlt className="w-3 h-3" />
-                      Open App
-                    </Button>
-                  )}
+                    <div className="flex flex-col sm:flex-row gap-2">
+                      <DeploymentMonitorButton
+                        instanceId={deployment.instanceId}
+                        deploymentId={deployment._id}
+                        status={deployment.status}
+                        publicIp={deployment.publicIp}
+                        onDeleted={() => {
+                          setDeployments(prev => prev.filter(d => d._id !== deployment._id));
+                        }}
+                      />
+                      {deployment.status === 'success' && deployment.publicIp && (
+                        <Button
+                          type="button"
+                          variant="secondary"
+                          size="sm"
+                          onClick={() => {
+                            const url = deployment.port ? `http://${deployment.publicIp}:${deployment.port}` : `http://${deployment.publicIp}`;
+                            window.open(url, '_blank');
+                          }}
+                          className="flex items-center gap-2"
+                        >
+                          <FaExternalLinkAlt className="w-3 h-3" />
+                          Open App
+                        </Button>
+                      )}
+                    </div>
                 </div>
               </Card>
             ))

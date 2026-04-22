@@ -36,7 +36,7 @@ export default function LandingPage() {
       icon: <Sparkles className="w-6 h-6" />,
       title: "AI-Powered Generation",
       description:
-        "Amazon Nova AI analyzes your repository and generates optimized pipelines automatically.",
+        "Claude 4.6 Sonnet AI analyzes your repository and generates optimized pipelines automatically.",
     },
     {
       icon: <Zap className="w-6 h-6" />,
@@ -90,7 +90,7 @@ export default function LandingPage() {
                 <GitBranch className="w-5 h-5 text-white" />
               </div>
               <span className="text-lg font-bold tracking-tight bg-gradient-to-r from-cyan-500 to-cyan-600 bg-clip-text text-transparent">
-                Nova CI/CD
+                NerveFlow CI/CD
               </span>
             </Link>
 
@@ -119,7 +119,7 @@ export default function LandingPage() {
         <div className="container mx-auto px-6">
           <div className="max-w-4xl mx-auto text-center space-y-8">
             <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-muted border text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-              Powered by Amazon Nova
+              Powered by Claude 4.6 Sonnet
             </div>
 
             <h1 className="text-4xl md:text-6xl font-bold tracking-tight leading-tight">
@@ -129,7 +129,7 @@ export default function LandingPage() {
             </h1>
 
             <p className="text-lg md:text-xl text-muted-foreground max-w-2xl mx-auto leading-relaxed">
-              Connect your GitHub repositories and let Amazon Nova AI automatically
+              Connect your GitHub repositories and let Claude 4.6 Sonnet AI automatically
               generate optimized CI/CD pipelines tailored to your project.
             </p>
 
@@ -282,7 +282,7 @@ export default function LandingPage() {
               <span className="font-bold tracking-tight">CI/CD Platform</span>
             </div>
             <p className="text-xs text-muted-foreground font-medium">
-              © 2024 CI/CD Platform. Powered by Amazon Nova AI.
+              © 2024 CI/CD Platform. Powered by Claude 4.6 Sonnet AI.
             </p>
           </div>
         </div>

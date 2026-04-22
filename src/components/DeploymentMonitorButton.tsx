@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import DeploymentLogViewer from './DeploymentLogViewer';
+import Button from './ui/Button';
 
 interface Props {
   instanceId: string;
@@ -16,18 +17,15 @@ export default function DeploymentMonitorButton({ instanceId, deploymentId, stat
 
   return (
     <>
-      <button
+      <Button
+        type="button"
+        variant={status === 'failed' ? 'destructive' : status === 'success' ? 'primary' : 'secondary'}
+        size="sm"
         onClick={() => setShowLogs(true)}
-        className={`inline-flex items-center px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
-          status === 'deploying'
-            ? 'bg-blue-100 text-blue-700 hover:bg-blue-200'
-            : status === 'success'
-            ? 'bg-green-100 text-green-700 hover:bg-green-200'
-            : 'bg-red-100 text-red-700 hover:bg-red-200'
-        }`}
+        className="flex items-center gap-2"
       >
         {status === 'deploying' && (
-          <svg className="animate-spin -ml-1 mr-2 h-4 w-4" fill="none" viewBox="0 0 24 24">
+          <svg className="animate-spin h-4 w-4" fill="none" viewBox="0 0 24 24">
             <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
             <path
               className="opacity-75"
@@ -36,8 +34,8 @@ export default function DeploymentMonitorButton({ instanceId, deploymentId, stat
             />
           </svg>
         )}
-        View Deployment Details
-      </button>
+        View Details
+      </Button>
 
       {showLogs && (
         <DeploymentLogViewer

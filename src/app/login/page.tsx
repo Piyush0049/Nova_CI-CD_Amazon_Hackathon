@@ -58,7 +58,7 @@ export default function LoginPage() {
                     <div className="absolute inset-x-0 top-0 h-1 bg-gradient-to-r from-transparent via-primary/50 to-transparent opacity-50" />
 
                     <div className="text-center mb-8">
-                        <h2 className="text-2xl font-bold tracking-tight bg-gradient-to-r from-cyan-500 to-blue-600 bg-clip-text text-transparent mb-2">Welcome to Nova CI/CD</h2>
+                        <h2 className="text-2xl font-bold tracking-tight bg-gradient-to-r from-cyan-500 to-blue-600 bg-clip-text text-transparent mb-2">Welcome to NerveFlow CI/CD</h2>
                         <p className="text-[13px] text-muted-foreground">Connect your GitHub account to get started</p>
                     </div>
 

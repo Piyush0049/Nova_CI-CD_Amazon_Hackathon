@@ -62,7 +62,6 @@ export class PipelineParser {
       };
 
       let currentJob: any = null;
-      let indent = 0;
 
       for (const line of lines) {
         const trimmed = line.trim();

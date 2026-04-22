@@ -41,7 +41,7 @@ export default function AppLayout({ children, pipelineCount = 0 }: AppLayoutProp
               <div className="relative w-10 h-10 rounded-xl  flex items-center justify-center shadow-md transition-all duration-300 group-hover/logo:scale-105 group-hover/logo:shadow-lg group-hover/logo:shadow-cyan-500/30">
                 <Image
                   src="/logo.svg"
-                  alt="Nova CI/CD Platform Logo"
+                  alt="NerveFlow CI/CD Platform Logo"
                   width={40}
                   height={40}
                   className="w-full h-full object-contain p-1.5"
@@ -50,9 +50,9 @@ export default function AppLayout({ children, pipelineCount = 0 }: AppLayoutProp
               </div>
               <div>
                 <h1 className="text-xl font-bold tracking-tight bg-gradient-to-r from-cyan-500 to-cyan-600 bg-clip-text text-transparent transition-all duration-300">
-                  Nova CI/CD
+                  NerveFlow CI/CD
                 </h1>
-                <p className="text-[10px] text-muted-foreground font-medium">Powered by Amazon Nova AI</p>
+                <p className="text-[10px] text-muted-foreground font-medium">Powered by Claude 4.6 Sonnet AI</p>
               </div>
             </div>
 
@@ -216,7 +216,7 @@ export default function AppLayout({ children, pipelineCount = 0 }: AppLayoutProp
         <div className="flex items-center gap-4">
           <span className="flex items-center gap-1.5"><span className="w-1.5 h-1.5 rounded-full bg-green-500" /> Live</span>
           <span className="opacity-50">|</span>
-          <span>Nova Engine v1.0.4</span>
+          <span>NerveFlow Engine v1.0.4</span>
         </div>
         <div className="hidden sm:block">
           All data processed securely

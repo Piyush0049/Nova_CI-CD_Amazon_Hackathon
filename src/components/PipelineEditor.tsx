@@ -121,7 +121,7 @@ export default function PipelineEditor({ initialYaml = '', onSave, isSaving = fa
 
           <div className="border-t pt-4">
             <p className="text-sm text-muted-foreground mb-3">
-              Review your pipeline configuration above. Click "Create Pipeline" to save and deploy it.
+              Review your pipeline configuration above. Click &quot;Create Pipeline&quot; to save and deploy it.
             </p>
             <div className="flex gap-2">
               <Button

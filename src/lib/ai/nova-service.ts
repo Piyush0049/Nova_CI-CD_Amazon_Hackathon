@@ -1,12 +1,12 @@
 import {
   BedrockRuntimeClient,
-  InvokeModelCommand,
+  ConverseCommand,
 } from "@aws-sdk/client-bedrock-runtime";
 import { AITaskPlan, BrowserAction } from "@/types";
 
 export class NovaService {
   private client: BedrockRuntimeClient;
-  private modelId = "us.amazon.nova-lite-v1:0";
+  private modelId = process.env.BEDROCK_MODEL_ID || "anthropic.claude-3-5-sonnet-20241022-v2:0";
 
   constructor() {
     this.client = new BedrockRuntimeClient({
@@ -22,32 +22,25 @@ export class NovaService {
     const prompt = this.buildPlanningPrompt(userCommand);
 
     try {
-      const command = new InvokeModelCommand({
+      const command = new ConverseCommand({
         modelId: this.modelId,
-        contentType: "application/json",
-        accept: "application/json",
-        body: JSON.stringify({
-          messages: [
-            {
-              role: "user",
-              content: [{ text: prompt }],
-            },
-          ],
-          inferenceConfig: {
-            max_new_tokens: 4000,
-            temperature: 0.3,
-            top_p: 0.9,
+        messages: [
+          {
+            role: "user",
+            content: [{ text: prompt }],
           },
-        }),
+        ],
+        inferenceConfig: {
+          maxTokens: 4000,
+          // temperature: 0.3,
+          // topP: 0.9,
+        },
       });
 
       const response = await this.client.send(command);
-      const responseBody = JSON.parse(
-        new TextDecoder().decode(response.body)
-      );
+      const responseText = response.output?.message?.content?.[0]?.text || '';
 
-      const responseText = responseBody.output.message.content[0].text;
-      console.log("Nova AI response received, parsing...");
+      console.log("Claude Sonnet response received, parsing...");
 
       const plan = this.parseTaskPlan(responseText, userCommand);
 
@@ -61,7 +54,7 @@ export class NovaService {
       return plan;
 
     } catch (error: any) {
-      console.error("Error calling Nova:", error.message || error);
+      console.error("Error calling Claude Sonnet:", error.message || error);
       console.log("Using fallback plan due to API error");
       return this.getFallbackPlan(userCommand);
     }

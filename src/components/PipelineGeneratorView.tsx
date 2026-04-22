@@ -178,7 +178,7 @@ export default function PipelineGeneratorView({
         <Card className="p-6">
           <h2 className="text-xl font-semibold mb-4">Step 1: Analyze Repository</h2>
           <p className="text-gray-600 dark:text-gray-400 mb-4">
-            Nova AI will analyze your repository structure, dependencies, and project type to understand the best CI/CD pipeline configuration.
+            Claude 4.6 Sonnet will analyze your repository structure, dependencies, and project type to understand the best CI/CD pipeline configuration.
           </p>
           <Button
             type="button"
@@ -186,7 +186,7 @@ export default function PipelineGeneratorView({
             onClick={analyzeRepository}
             disabled={analyzing}
           >
-            {analyzing ? 'Analyzing Repository...' : 'Analyze with Nova AI'}
+            {analyzing ? 'Analyzing Repository...' : 'Analyze with Claude 4.6 Sonnet'}
           </Button>
         </Card>
       )}
@@ -214,7 +214,7 @@ export default function PipelineGeneratorView({
 
           <h3 className="font-semibold mb-2">Step 2: Generate Pipeline</h3>
           <p className="text-gray-600 dark:text-gray-400 mb-4">
-            Based on the analysis, Nova AI will create a customized CI/CD pipeline with stages for build, test, and deployment.
+            Based on the analysis, Claude 4.6 Sonnet will create a customized CI/CD pipeline with stages for build, test, and deployment.
           </p>
           <Button
             type="button"
@@ -222,7 +222,7 @@ export default function PipelineGeneratorView({
             onClick={generatePipeline}
             disabled={generating}
           >
-            {generating ? 'Generating Pipeline...' : 'Generate Pipeline with Nova AI'}
+            {generating ? 'Generating Pipeline...' : 'Generate Pipeline with Claude 4.6 Sonnet'}
           </Button>
         </Card>
       )}
@@ -240,7 +240,7 @@ export default function PipelineGeneratorView({
               </h2>
             </div>
             <p className="text-green-700 dark:text-green-300">
-              Nova AI has created a customized CI/CD pipeline based on your repository. Review and customize it below.
+              Claude 4.6 Sonnet has created a customized CI/CD pipeline based on your repository. Review and customize it below.
             </p>
           </Card>
 
@@ -287,7 +287,7 @@ export default function PipelineGeneratorView({
             <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
             <div>
               <p className="font-semibold">
-                {analyzing ? 'Analyzing repository with Nova AI...' : 'Generating pipeline with Nova AI...'}
+                {analyzing ? 'Analyzing repository with Claude 4.6 Sonnet...' : 'Generating pipeline with Claude 4.6 Sonnet...'}
               </p>
               <p className="text-sm text-gray-600 dark:text-gray-400">
                 This may take a few moments

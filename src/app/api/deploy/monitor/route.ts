@@ -46,9 +46,9 @@ export async function POST(request: NextRequest) {
     }
 
     console.log('[MONITOR] Error detected:', errorDetected.errorLine);
-    console.log('[MONITOR] Triggering Nova AI auto-fix...');
+    console.log('[MONITOR] Triggering Claude 4.6 Sonnet auto-fix...');
 
-    // Trigger Nova AI auto-fix for ANY error
+    // Trigger Claude 4.6 Sonnet auto-fix for ANY error
     const fixResult = await autoFixDeploymentError(
       {
         errorLog: errorDetected.context,
@@ -231,7 +231,7 @@ function detectError(logs: string): {
     // Check for errors
     for (const pattern of errorPatterns) {
       if (pattern.test(line)) {
-        // Collect extensive context for Nova AI analysis (30 lines before, 10 after)
+        // Collect extensive context for Claude 4.6 Sonnet analysis (30 lines before, 10 after)
         const start = Math.max(0, i - 30);
         const end = Math.min(lines.length, i + 10);
         errorContext = lines.slice(start, end);

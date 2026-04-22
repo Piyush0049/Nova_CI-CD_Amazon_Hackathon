@@ -266,7 +266,7 @@ export default function CreatePipelinePage() {
             </div>
             <h3 className="text-xl font-semibold mb-2">Analyzing Repository</h3>
             <p className="text-muted-foreground text-sm">
-              Amazon Nova AI is generating your pipeline...
+              Claude 4.6 Sonnet AI is generating your pipeline...
             </p>
           </motion.div>
         </div>

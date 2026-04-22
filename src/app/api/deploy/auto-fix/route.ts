@@ -35,7 +35,7 @@ export async function POST(request: NextRequest) {
     console.log('[AUTO-FIX API] Stage:', stage);
     console.log('[AUTO-FIX API] Command:', command);
 
-    // Run Nova AI auto-fix
+    // Run Claude 4.6 Sonnet auto-fix
     const result = await autoFixDeploymentError(
       {
         errorLog,

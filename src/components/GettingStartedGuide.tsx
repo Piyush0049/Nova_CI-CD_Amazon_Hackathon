@@ -49,7 +49,7 @@ export default function GettingStartedGuide({ onClose, onNavigateToRepos }: Gett
           <div className="absolute inset-0 bg-grid-white/[0.05] bg-[size:20px_20px]" />
           <div className="relative z-10 flex items-center justify-between">
             <div>
-              <h2 className="text-3xl font-bold mb-2">Welcome to Nova CI/CD!</h2>
+              <h2 className="text-3xl font-bold mb-2">Welcome to NerveFlow CI/CD!</h2>
               <p className="text-cyan-50">
                 Let&apos;s get you started with automated deployments in 4 simple steps
               </p>

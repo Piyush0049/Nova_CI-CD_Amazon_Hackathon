@@ -31,7 +31,7 @@ const bedrockClient = new BedrockRuntimeClient({
 });
 
 /**
- * Diagnose deployment and suggest fixes using Amazon Nova Premier
+ * Diagnose deployment and suggest fixes using Claude Sonnet
  */
 export async function diagnoseDeployment(
   repoFiles: Record<string, string>,
@@ -105,10 +105,10 @@ Return ONLY valid JSON, no markdown formatting.`;
 }
 
 async function invokeNovaPremier(prompt: string): Promise<string> {
-  console.log('[DEPLOYMENT-DOCTOR] 🚀 Invoking Amazon Nova Premier...');
+  console.log('[DEPLOYMENT-DOCTOR] 🚀 Invoking Claude Sonnet...');
 
   const command = new ConverseCommand({
-    modelId: 'us.amazon.nova-premier-v1:0',
+    modelId: process.env.BEDROCK_MODEL_ID || 'anthropic.claude-3-5-sonnet-20241022-v2:0',
     messages: [
       {
         role: 'user',
@@ -117,8 +117,8 @@ async function invokeNovaPremier(prompt: string): Promise<string> {
     ],
     inferenceConfig: {
       maxTokens: 4096,
-      temperature: 0.1,
-      topP: 0.9,
+      // temperature: 0.1,
+      // topP: 0.9,
     },
   });
 

@@ -65,14 +65,14 @@ export interface FrameworkBuildConfig {
 }
 
 /**
- * Analyzes repository files using Nova AI to determine correct build strategy
+ * Analyzes repository files using Claude Sonnet to determine correct build strategy
  */
 export async function analyzeRepositoryStructure(
   instanceId: string,
   repoFiles: RepositoryFiles
 ): Promise<ProjectAnalysis> {
   try {
-    console.log('[NOVA AI] Analyzing repository structure...');
+    console.log('[Claude Sonnet] Analyzing repository structure...');
 
     const prompt = `You are an expert DevOps engineer analyzing a project to determine the correct build strategy.
 
@@ -125,7 +125,7 @@ Output ONLY valid JSON, no other text:`;
 
     const response = await bedrockClient.send(
       new ConverseCommand({
-        modelId: 'us.amazon.nova-premier-v1:0',  // Using the most powerful Nova model
+        modelId: process.env.BEDROCK_MODEL_ID || 'anthropic.claude-3-5-sonnet-20241022-v2:0',  // Using the most powerful Claude Sonnet model
         messages: [
           {
             role: 'user',
@@ -134,20 +134,20 @@ Output ONLY valid JSON, no other text:`;
         ],
         inferenceConfig: {
           maxTokens: 8000,  // Increased for deeper analysis
-          temperature: 0.1,  // Slightly higher for creative problem-solving
-          topP: 0.98,
+          // temperature: 0.1,  // Slightly higher for creative problem-solving
+          // topP: 0.98,
         },
       })
     );
 
     const aiResponse = response.output?.message?.content?.[0]?.text || '';
-    console.log('[NOVA AI] Repository analysis response:', aiResponse);
+    console.log('[Claude Sonnet] Repository analysis response:', aiResponse);
 
     // Parse JSON response
     const jsonMatch = aiResponse.match(/\{[\s\S]*\}/);
     if (jsonMatch) {
       const analysis: ProjectAnalysis = JSON.parse(jsonMatch[0]);
-      console.log('[NOVA AI] Parsed analysis:', analysis);
+      console.log('[Claude Sonnet] Parsed analysis:', analysis);
       return analysis;
     }
 
@@ -161,7 +161,7 @@ Output ONLY valid JSON, no other text:`;
       recommendations: ['Could not parse project structure, using defaults'],
     };
   } catch (error: any) {
-    console.error('[NOVA AI] Error analyzing repository structure:', error);
+    console.error('[Claude Sonnet] Error analyzing repository structure:', error);
     return {
       buildTool: 'unknown',
       dependencies: [],
@@ -174,15 +174,15 @@ Output ONLY valid JSON, no other text:`;
 }
 
 /**
- * Generate framework-specific build configuration using Nova AI
+ * Generate framework-specific build configuration using Claude Sonnet
  */
 export async function generateFrameworkBuildConfig(
   projectAnalysis: ProjectAnalysis,
   packageJsonContent?: string
 ): Promise<FrameworkBuildConfig> {
   try {
-    console.log('[NOVA AI] Generating framework-specific build config...');
-    console.log('[NOVA AI] Framework:', projectAnalysis.buildTool);
+    console.log('[Claude Sonnet] Generating framework-specific build config...');
+    console.log('[Claude Sonnet] Framework:', projectAnalysis.buildTool);
 
     // Parse package.json to extract actual scripts
     let actualScripts = '';
@@ -195,7 +195,7 @@ export async function generateFrameworkBuildConfig(
             .join('\n');
         }
       } catch (e) {
-        console.log('[NOVA AI] Could not parse package.json');
+        console.log('[Claude Sonnet] Could not parse package.json');
       }
     }
 
@@ -255,7 +255,7 @@ OUTPUT FORMAT (JSON only, no markdown):
 
     const response = await bedrockClient.send(
       new ConverseCommand({
-        modelId: 'us.amazon.nova-premier-v1:0',
+        modelId: process.env.BEDROCK_MODEL_ID || 'anthropic.claude-3-5-sonnet-20241022-v2:0',
         messages: [
           {
             role: 'user',
@@ -264,8 +264,8 @@ OUTPUT FORMAT (JSON only, no markdown):
         ],
         inferenceConfig: {
           maxTokens: 1000,
-          temperature: 0.1,
-          topP: 0.9,
+          // temperature: 0.1,
+          // topP: 0.9,
         },
       })
     );
@@ -273,13 +273,13 @@ OUTPUT FORMAT (JSON only, no markdown):
     const aiResponse =
       response.output?.message?.content?.[0]?.text || '{}';
 
-    console.log('[NOVA AI] Build config response:', aiResponse);
+    console.log('[Claude Sonnet] Build config response:', aiResponse);
 
     // Parse JSON response
     const jsonMatch = aiResponse.match(/\{[\s\S]*\}/);
     if (jsonMatch) {
       const config: FrameworkBuildConfig = JSON.parse(jsonMatch[0]);
-      console.log('[NOVA AI] Generated config:', config);
+      console.log('[Claude Sonnet] Generated config:', config);
       return config;
     }
 
@@ -297,7 +297,7 @@ OUTPUT FORMAT (JSON only, no markdown):
       progressMonitoring: true,
     };
   } catch (error: any) {
-    console.error('[NOVA AI] Error generating build config:', error);
+    console.error('[Claude Sonnet] Error generating build config:', error);
     return {
       framework: 'unknown',
       installCommand: 'npm install --legacy-peer-deps',
@@ -399,16 +399,16 @@ export async function fetchRepositoryFiles(instanceId: string): Promise<Reposito
 }
 
 /**
- * Analyzes deployment error using Nova AI and generates fix commands
+ * Analyzes deployment error using Claude Sonnet and generates fix commands
  * NOW HANDLES ALL TYPES OF ERRORS - Not just ESLint!
  */
 export async function analyzeDeploymentError(error: DeploymentError): Promise<string[]> {
   try {
-    console.log('[NOVA AI] Analyzing deployment error...');
-    console.log('[NOVA AI] Error stage:', error.stage);
-    console.log('[NOVA AI] Failed command:', error.command);
+    console.log('[Claude Sonnet] Analyzing deployment error...');
+    console.log('[Claude Sonnet] Error stage:', error.stage);
+    console.log('[Claude Sonnet] Failed command:', error.command);
 
-    const prompt = `You are Amazon Nova Premier AI - the most powerful AI model with ELITE capabilities in DevOps, system architecture, and deployment automation. You have 30+ years of combined expertise across:
+    const prompt = `You are Claude Sonnet AI - the most powerful AI model with ELITE capabilities in DevOps, system architecture, and deployment automation. You have 30+ years of combined expertise across:
 - CI/CD Pipelines (GitLab CI, Jenkins, GitHub Actions, CircleCI)
 - Cloud Infrastructure (AWS, Azure, GCP, Kubernetes, Docker)
 - Full-Stack Development (Node.js, React, Vue, Angular, Python, Go, Rust)
@@ -447,6 +447,8 @@ DETECTED LANGUAGE/FRAMEWORK: ${error.framework}
 - If language contains "Node" or "JavaScript" or "TypeScript" or "React" or "Next":
   * ONLY use Node.js commands: npm, yarn, pnpm, node, npx
   * DO NOT use: pip, python - these are for Python!
+  * **ALWAYS prepend PATH="./node_modules/.bin:$PATH" before running any build command.**
+  * **If package.json has "type": "module", create/fix postcss.config.cjs instead of .js.**
 
 - If language contains "Rust" or "Cargo":
   * ONLY use Rust commands: cargo, rustc, rustup
@@ -541,7 +543,9 @@ You have encyclopedic knowledge of these common patterns:
 🐧 System & Permissions:
 - File ownership → chown ec2-user:ec2-user
 - Execute permissions → chmod +x for binaries
-- PATH issues → Add node_modules/.bin to PATH
+- PATH issues → Add node_modules/.bin to PATH: export PATH="./node_modules/.bin:$PATH"
+- Missing PostCSS config in ESM → Create postcss.config.cjs if "type": "module"
+- Missing TypeScript → npm install -g typescript --no-audit
 
 ═══════════════════════════════════════════════════════════════════
 💡 ADVANCED PROBLEM-SOLVING STRATEGIES:
@@ -576,18 +580,33 @@ When creating files, use battle-tested configurations:
 ⚡ CRITICAL OUTPUT REQUIREMENTS (NON-NEGOTIABLE):
 ═══════════════════════════════════════════════════════════════════
 ✅ OUTPUT FORMAT: Pure executable bash commands ONLY
-   ❌ NO markdown code blocks (no backticks)
-   ❌ NO explanatory text
-   ❌ NO comments (except in generated config files)
-   ❌ NO echo statements for logging (only for logic/flow control is OK)
-   ✅ ONE command per line
-   ✅ Commands must execute in sequence
+   ❌ NO YAML BLOCK SCALARS (- |): Write every command as a separate flat string item.
+   ❌ NO multi-line | blocks.
+   ❌ NO markdown code blocks.
+   ❌ NO explanatory text.
+   ✅ ONE command per line.
+   ✅ Commands must execute in sequence.
+
+🚀 PRODUCTION DEPLOYMENT RULES:
+   • EXPORT HOME: Always start deploy scripts with:
+     export HOME=/home/ec2-user
+     export PM2_HOME=/home/ec2-user/.pm2
+   • PM2 FOR ALL SERVERS: Long-running processes MUST use PM2.
+     pm2 delete app 2>/dev/null || true
+     pm2 start "<command>" --name app
+     pm2 save --force
+   • BIND TO 0.0.0.0: Ensure host is 0.0.0.0.
+   • STATIC FRONTENDS: Build first, then serve using absolute path:
+     pm2 start "serve -s /home/ec2-user/app/build -l 3000 --no-clipboard" --name app
+   • INLINE HEALTH CHECK: Single line only:
+     sleep 8
+     curl -sf http://localhost:3000/ && echo "✅ App healthy" || (pm2 logs app --lines 30 --nostream && exit 1)
 
 ✅ COMMAND SAFETY & EFFECTIVENESS:
-   • Commands MUST be safe (no destructive operations without checks)
-   • Commands MUST fix the COMPLETE problem (not partial fixes)
-   • Commands MUST be idempotent (safe to run multiple times)
-   • Working directory: /home/ec2-user/app (already set, no 'cd' needed)
+   • Commands MUST be safe (no destructive operations without checks).
+   • Commands MUST fix the COMPLETE problem.
+   • Commands MUST be idempotent.
+   • Working directory: /home/ec2-user/app.
 
 ✅ DEPENDENCY INSTALLATION RULES:
    • ALWAYS use: --legacy-peer-deps --force (prevents peer dependency conflicts)
@@ -613,15 +632,43 @@ When creating files, use battle-tested configurations:
    • Include all necessary imports, exports, and configurations
 
 ✅ CACHE & CLEANUP:
-   • Clear npm cache if dependency issues: npm cache clean --force
-   • Remove lock files if needed: rm -rf package-lock.json
-   • Clean build artifacts: rm -rf dist build .next node_modules/.cache
+   • Node.js: npm cache clean --force && rm -rf node_modules package-lock.json
+   • Rust: cargo clean
+   • Go: go clean -modcache
+   • Python: rm -rf venv/ && python3 -m venv venv
 
 ═══════════════════════════════════════════════════════════════════
-COMPREHENSIVE ERROR HANDLING GUIDE:
+🚀 LANGUAGE-SPECIFIC FIX PROTOCOLS:
 ═══════════════════════════════════════════════════════════════════
 
-🔧 BUILD STAGE ERRORS:
+🦀 RUST / CARGO FIXES:
+──────────────────────────────────────────────────────────────────
+❌ "cargo: command not found" or "rustc: command not found"
+   ✅ FIX: sudo yum install -y gcc gcc-c++ make pkg-config openssl-devel
+           curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+           source $HOME/.cargo/env
+❌ Missing crates or dependency errors
+   ✅ FIX: source $HOME/.cargo/env && cargo fetch
+           source $HOME/.cargo/env && cargo build --release
+
+🐹 GO FIXES:
+──────────────────────────────────────────────────────────────────
+❌ "go: command not found"
+   ✅ FIX: sudo yum install -y golang
+❌ Dependency resolution errors
+   ✅ FIX: go mod download
+           go mod tidy
+
+🐍 PYTHON FIXES:
+──────────────────────────────────────────────────────────────────
+❌ "pip: command not found" or "python3: command not found"
+   ✅ FIX: sudo yum install -y python3 python3-pip
+❌ Virtual environment issues
+   ✅ FIX: python3 -m venv venv
+           source venv/bin/activate
+           pip install --upgrade pip
+
+📦 NODE.JS / NPM FIXES:
 ──────────────────────────────────────────────────────────────────
 ❌ "vite: command not found" or "Cannot find module 'vite'"
    ✅ FIX: npm install --save-dev vite @vitejs/plugin-react vite-tsconfig-paths --legacy-peer-deps --force
@@ -1138,7 +1185,7 @@ Now, analyze the error above and provide your fix commands:`;
 
     const response = await bedrockClient.send(
       new ConverseCommand({
-        modelId: 'us.amazon.nova-premier-v1:0',  // Using the most powerful Nova model for complex debugging
+        modelId: process.env.BEDROCK_MODEL_ID || 'anthropic.claude-3-5-sonnet-20241022-v2:0',  // Using the most powerful Claude Sonnet model for complex debugging
         messages: [
           {
             role: 'user',
@@ -1146,15 +1193,15 @@ Now, analyze the error above and provide your fix commands:`;
           },
         ],
         inferenceConfig: {
-          maxTokens: 8000,  // Maximum tokens for deep analysis and comprehensive solutions
-          temperature: 0.15, // Balanced - precise but with creative problem-solving
-          topP: 0.98,  // High diversity for exploring multiple solution paths
+          maxTokens: 16000,  // Maximum tokens for deep analysis with Claude Sonnet
+          // temperature: 0.15, // Balanced - precise but with creative problem-solving
+          // topP: 0.98,  // High diversity for exploring multiple solution paths
         },
       })
     );
 
     const aiResponse = response.output?.message?.content?.[0]?.text || '';
-    console.log('[NOVA AI] Raw response:', aiResponse);
+    console.log('[Claude Sonnet] Raw response:', aiResponse);
 
     // Extract commands from AI response
     const commands = aiResponse
@@ -1174,16 +1221,16 @@ Now, analyze the error above and provide your fix commands:`;
         return true;
       });
 
-    console.log('[NOVA AI] Generated fix commands:', commands);
+    console.log('[Claude Sonnet] Generated fix commands:', commands);
 
     if (commands.length === 0) {
-      console.warn('[NOVA AI] No commands generated, AI response may need filtering');
+      console.warn('[Claude Sonnet] No commands generated, AI response may need filtering');
     }
 
     return commands;
   } catch (error: any) {
-    console.error('[NOVA AI] Error analyzing deployment error:', error);
-    throw new Error(`Nova AI analysis failed: ${error.message}`);
+    console.error('[Claude Sonnet] Error analyzing deployment error:', error);
+    throw new Error(`Claude Sonnet analysis failed: ${error.message}`);
   }
 }
 
@@ -1203,7 +1250,7 @@ export async function executeFixCommands(
       `cd ${workingDirectory}`,
       'export CI=true',
       'export NODE_ENV=production',
-      '# Nova AI Generated Fix Commands',
+      '# Claude Sonnet Generated Fix Commands',
       ...commands,
       '# Verify fix by checking exit code',
       'echo "Fix commands completed successfully"',
@@ -1213,7 +1260,7 @@ export async function executeFixCommands(
       new SendCommandCommand({
         InstanceIds: [instanceId],
         DocumentName: 'AWS-RunShellScript',
-        Comment: 'Nova AI Auto-Fix - Handles All Errors',
+        Comment: 'Claude Sonnet Auto-Fix - Handles All Errors',
         Parameters: {
           commands: fullCommands,
           workingDirectory: [workingDirectory],
@@ -1289,19 +1336,22 @@ export async function retryFailedStage(
     console.log('[SSM] Original command:', originalCommand);
 
     const retryCommands = [
-      'cd /home/ec2-user/app',
+      'export HOME=/home/ec2-user',
+      'export PM2_HOME=/home/ec2-user/.pm2',
       'export CI=true',
       'export NODE_ENV=production',
-      `echo "[RETRY] Retrying ${stage} stage after Nova AI fix..."`,
+      'export HOST=0.0.0.0',
+      `export PORT=\${PORT:-3000}`,
+      'export PATH="./node_modules/.bin:$PATH"',
+      `echo "[RETRY] Retrying ${stage} stage after Claude Sonnet fix..."`,
       originalCommand,
-      `echo "[RETRY] ✓ ${stage} stage completed successfully after fix"`,
     ];
 
     const sendCommandResponse = await ssmClient.send(
       new SendCommandCommand({
         InstanceIds: [instanceId],
         DocumentName: 'AWS-RunShellScript',
-        Comment: `Retry ${stage} stage after Nova AI fix`,
+        Comment: `Retry ${stage} stage after Claude Sonnet fix`,
         Parameters: {
           commands: retryCommands,
           workingDirectory: ['/home/ec2-user/app'],
@@ -1371,19 +1421,19 @@ export async function autoFixDeploymentError(
   try {
     console.log('[AUTO-FIX] Starting auto-fix process for ANY error type...');
 
-    // Step 1: Analyze error with Nova AI - handles ALL errors
+    // Step 1: Analyze error with Claude Sonnet - handles ALL errors
     const fixCommands = await analyzeDeploymentError(error);
 
     if (fixCommands.length === 0) {
       return {
         success: false,
         fixCommands: [],
-        analysis: 'Nova AI could not generate fix commands for this error',
+        analysis: 'Claude Sonnet could not generate fix commands for this error',
         error: 'No fix commands generated',
       };
     }
 
-    console.log('[AUTO-FIX] Nova AI generated', fixCommands.length, 'fix commands');
+    console.log('[AUTO-FIX] Claude Sonnet generated', fixCommands.length, 'fix commands');
 
     // Return commands for caller to execute (recommended - allows fix + retry in one session)
     if (!executeImmediately) {
@@ -1417,7 +1467,7 @@ export async function autoFixDeploymentError(
       success: retryResult.success,
       fixCommands,
       analysis: retryResult.success
-        ? 'Error fixed successfully by Nova AI and stage completed'
+        ? 'Error fixed successfully by Claude Sonnet and stage completed'
         : 'Fix applied but stage still fails - may need manual intervention',
       executionOutput: `${fixResult.output}\n\n=== RETRY OUTPUT ===\n${retryResult.output}`,
       error: retryResult.error,

@@ -114,7 +114,7 @@ Return ONLY valid JSON, no markdown.`;
 
   try {
     const command = new ConverseCommand({
-      modelId: 'us.amazon.nova-premier-v1:0',
+      modelId: process.env.BEDROCK_MODEL_ID || 'anthropic.claude-3-5-sonnet-20241022-v2:0',
       messages: [
         {
           role: 'user',
@@ -123,8 +123,8 @@ Return ONLY valid JSON, no markdown.`;
       ],
       inferenceConfig: {
         maxTokens: 4096,
-        temperature: 0.1,
-        topP: 0.9,
+        // temperature: 0.1,
+        // topP: 0.9,
       },
     });
 

@@ -30,12 +30,13 @@ export function detectProjectDeploymentType(
   goMod?: string,
   hasViteConfig?: boolean,
   hasNextConfig?: boolean,
-  hasWebpackConfig?: boolean
+  hasWebpackConfig?: boolean,
+  customPort?: number
 ): ProjectDetectionResult {
   let framework = 'Unknown';
   let type: ProjectDeploymentType = 'STATIC';
   let buildOutputDir = '/home/ec2-user/app/build';
-  let port = 3000;
+  let port = customPort || 3000;
   let startCommand = '';
   let needsPM2 = false;
 
@@ -50,14 +51,14 @@ export function detectProjectDeploymentType(
         framework = 'Next.js';
         type = 'BACKEND';
         buildOutputDir = '/home/ec2-user/app/.next';
-        port = 3000;
+        port = customPort || 3000;
         startCommand = 'npm start';
         needsPM2 = true;
       } else if (deps['express'] || deps['fastify'] || deps['koa'] || deps['@nestjs/core']) {
         framework = deps['express'] ? 'Express' : deps['@nestjs/core'] ? 'NestJS' : 'Node.js Backend';
         type = 'BACKEND';
         buildOutputDir = '/home/ec2-user/app/dist';
-        port = 3000;
+        port = customPort || 3000;
         startCommand = pkg.scripts?.start || 'node index.js';
         needsPM2 = true;
       }
@@ -65,11 +66,12 @@ export function detectProjectDeploymentType(
       else if (deps['react-scripts']) {
         framework = 'Create React App';
         type = 'STATIC';
-        buildOutputDir = '/home/ec2-user/app/build';
-      } else if (deps['vite'] || hasViteConfig) {
-        framework = deps['vue'] ? 'Vite + Vue' : 'Vite + React';
-        type = 'STATIC';
-        buildOutputDir = '/home/ec2-user/app/dist';
+    // Check for common output dirs, prefer build for CRA, then dist
+    buildOutputDir = '/home/ec2-user/app/build'; // Default for CRA
+  } else if (deps['vite'] || hasViteConfig) {
+    framework = deps['vue'] ? 'Vite + Vue' : 'Vite + React';
+    type = 'STATIC';
+    buildOutputDir = '/home/ec2-user/app/dist'; // Default for Vite
       } else if (deps['@angular/core']) {
         framework = 'Angular';
         type = 'STATIC';
@@ -329,26 +331,41 @@ export function generateNginxConfig(detection: ProjectDetectionResult): NginxCon
     '  fi',
     'fi',
     '',
+    '# ENSURE PROPER OWNERSHIP (Critical for build/access)',
+    'echo "[NGINX] Fixing global project ownership..."',
+    'sudo chown -R ec2-user:ec2-user /home/ec2-user/app || true',
+    '',
     // Verify build output exists BEFORE creating config
     ...(detection.type === 'STATIC' ? [
       `echo "[NGINX] Verifying build output directory..."`,
-      `if [ ! -d "${detection.buildOutputDir}" ]; then`,
-      `  echo "[NGINX] ❌ ERROR: Build directory not found: ${detection.buildOutputDir}"`,
+      `# Try build directory first, then dist as fallback`,
+      `BUILD_PATH="${detection.buildOutputDir}"`,
+      `if [ ! -d "$BUILD_PATH" ] && [ -d "/home/ec2-user/app/dist" ]; then`,
+      `  echo "[NGINX] ℹ️  'build/' not found, but 'dist/' exists. Using 'dist/' instead."`,
+      `  BUILD_PATH="/home/ec2-user/app/dist"`,
+      `fi`,
+      ``,
+      `# If still not found, try a last-resort build if package.json exists`,
+      `if [ ! -d "$BUILD_PATH" ] && [ -f "/home/ec2-user/app/package.json" ]; then`,
+      `  echo "[NGINX] ⚠️  No build output found. Attempting late-stage build..."`,
+      `  cd /home/ec2-user/app`,
+      `  npm run build || true`,
+      `  if [ -d "build" ]; then BUILD_PATH="/home/ec2-user/app/build"; fi`,
+      `  if [ -d "dist" ]; then BUILD_PATH="/home/ec2-user/app/dist"; fi`,
+      `fi`,
+      ``,
+      `if [ ! -d "$BUILD_PATH" ]; then`,
+      `  echo "[NGINX] ❌ ERROR: Build directory not found (tried build/, dist/)"`,
       `  echo "[NGINX] Available directories in /home/ec2-user/app:"`,
       `  ls -la /home/ec2-user/app/`,
       `  exit 1`,
       `fi`,
       ``,
-      `if [ ! -f "${detection.buildOutputDir}/index.html" ]; then`,
-      `  echo "[NGINX] ❌ ERROR: index.html not found in ${detection.buildOutputDir}"`,
-      `  echo "[NGINX] Files in build directory:"`,
-      `  ls -la ${detection.buildOutputDir}/`,
-      `  exit 1`,
-      `fi`,
+      `# Update the root path in the config manually if we found a different one`,
+      `REAL_BUILD_PATH="$BUILD_PATH"`,
       ``,
-      `echo "[NGINX] ✅ Build output verified: ${detection.buildOutputDir}"`,
-      `echo "[NGINX] Files in build directory:"`,
-      `ls -lah ${detection.buildOutputDir}/ | head -20`,
+      `echo "[NGINX] ✅ Build output verified: $REAL_BUILD_PATH"`,
+      `ls -lah $REAL_BUILD_PATH/ | head -20`,
       ``,
     ] : []),
     '# Create nginx config',
@@ -357,6 +374,11 @@ export function generateNginxConfig(detection: ProjectDetectionResult): NginxCon
     nginxConfig,
     'NGINX_CONFIG_EOF',
     '',
+    ...(detection.type === 'STATIC' ? [
+      `# Ensure the root path in the config matches the actual build path we found`,
+      `sed -i "s|root ${detection.buildOutputDir}|root $REAL_BUILD_PATH|g" /tmp/app.conf`,
+      `echo "[NGINX] Updated config root to: $REAL_BUILD_PATH"`,
+    ] : []),
     '# Show generated config',
     'echo "[NGINX] Generated configuration:"',
     'cat /tmp/app.conf',
@@ -410,9 +432,20 @@ export function generateNginxConfig(detection: ProjectDetectionResult): NginxCon
     '# Ensure firewall allows HTTP',
     'echo "[NGINX] Configuring firewall..."',
     'if command -v firewall-cmd &> /dev/null; then',
+    '  echo "[NGINX] Configuring firewalld..."',
     '  sudo firewall-cmd --permanent --add-service=http 2>/dev/null || true',
+    '  sudo firewall-cmd --permanent --add-port=3000/tcp 2>/dev/null || true',
+    '  sudo firewall-cmd --permanent --add-port=8080/tcp 2>/dev/null || true',
+    '  sudo firewall-cmd --permanent --add-port=8000/tcp 2>/dev/null || true',
     '  sudo firewall-cmd --reload 2>/dev/null || true',
-    '  echo "[NGINX] ✅ Firewall configured"',
+    '  echo "[NGINX] ✅ firewalld configured"',
+    'elif command -v ufw &> /dev/null; then',
+    '  echo "[NGINX] Configuring ufw..."',
+    '  sudo ufw allow 80/tcp 2>/dev/null || true',
+    '  sudo ufw allow 3000/tcp 2>/dev/null || true',
+    '  sudo ufw allow 8080/tcp 2>/dev/null || true',
+    '  sudo ufw reload 2>/dev/null || true',
+    '  echo "[NGINX] ✅ ufw configured"',
     'fi',
     '',
     '# Stop any process using port 80',

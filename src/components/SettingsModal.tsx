@@ -82,7 +82,7 @@ export default function SettingsModal({
                   <option value="ap-southeast-1">Asia Pacific (Singapore)</option>
                 </select>
                 <p className="text-xs text-muted-foreground mt-1">
-                  Select the AWS region for Nova API calls
+                  Select the AWS region for Claude 4.6 Sonnet API calls
                 </p>
               </div>
 

@@ -1,7 +1,7 @@
 {
-  "name": "nova-cicd",
+  "name": "nerveflow",
   "version": "1.0.0",
-  "description": "Nova CI/CD - AI-powered universal deployment platform using Amazon Nova AI for automatic pipeline generation and AWS EC2 deployment",
+  "description": "NerveFlow CI/CD - AI-powered universal deployment platform using Amazon Nova AI for automatic pipeline generation and AWS EC2 deployment",
   "private": true,
   "license": "PROPRIETARY",
   "author": "All Rights Reserved",

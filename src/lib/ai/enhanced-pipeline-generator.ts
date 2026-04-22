@@ -1,6 +1,6 @@
 /**
  * Enhanced AI-Powered Pipeline Generator
- * Uses Amazon Nova AI to generate comprehensive YAML pipelines for ANY language/framework
+ * Uses Claude Sonnet AI to generate comprehensive YAML pipelines for ANY language/framework
  */
 
 import { BedrockRuntimeClient, ConverseCommand } from '@aws-sdk/client-bedrock-runtime';
@@ -24,7 +24,7 @@ export interface GeneratedPipeline {
 }
 
 /**
- * Generate comprehensive CI/CD pipeline using Nova AI
+ * Generate comprehensive CI/CD pipeline using Claude Sonnet
  */
 export async function generateAIPipeline(
   repoName: string,
@@ -61,19 +61,20 @@ export async function generateAIPipeline(
 }
 
 /**
- * Build comprehensive prompt for Nova AI
+ * Build comprehensive prompt for Claude Sonnet
  */
 function buildEnhancedPrompt(
   repoName: string,
   files: ProjectFiles,
   langInfo: LanguageDetectionResult
 ): string {
+  const port = langInfo.port || "3000";
   // Build file context
-  let fileContext = `PROJECT: ${repoName}\nPRIMARY LANGUAGE: ${langInfo.primaryLanguage}\nFRAMEWORK: ${langInfo.framework || 'N/A'}\n\n`;
+  let fileContext = `PROJECT: ${repoName}\nPRIMARY LANGUAGE: ${langInfo.primaryLanguage}\nFRAMEWORK: ${langInfo.framework || 'N/A'}\nDETECTED PORT: ${port}\n\n`;
 
   // Add relevant file contents based on language
   if (files.packageJson) {
-    fileContext += `PACKAGE.JSON:\n${files.packageJson}\n\n`;
+    fileContext += `PACKAGE.JSON (CRITICAL):\n${files.packageJson}\n\n`;
   }
 
   if (files.requirementsTxt) {
@@ -88,295 +89,190 @@ function buildEnhancedPrompt(
     fileContext += `GO.MOD:\n${files.goMod}\n\n`;
   }
 
-  if (files.pomXml) {
-    fileContext += `POM.XML:\n${files.pomXml.substring(0, 2000)}\n\n`;
-  }
-
-  if (files.buildGradle) {
-    fileContext += `BUILD.GRADLE:\n${files.buildGradle}\n\n`;
-  }
-
-  if (files.gemfile) {
-    fileContext += `GEMFILE:\n${files.gemfile}\n\n`;
-  }
-
-  if (files.composerJson) {
-    fileContext += `COMPOSER.JSON:\n${files.composerJson}\n\n`;
-  }
-
-  if (files.dockerfile) {
-    fileContext += `DOCKERFILE:\n${files.dockerfile.substring(0, 1000)}\n\n`;
-  }
-
   if (files.readme) {
     fileContext += `README (excerpt):\n${files.readme.substring(0, 1000)}\n\n`;
   }
 
-  const prompt = `You are THE WORLD'S BEST DevOps engineer and CI/CD expert. Your pipelines NEVER fail.
+  const prompt = `You are a world-class AWS DevOps Specialist. Generate a PRODUCTION CI/CD pipeline for Amazon EC2 (Standard User: ec2-user) executed via AWS Systems Manager (SSM).
 
-📁 PROJECT FILES:
+📁 PROJECT CONTEXT:
 ${fileContext}
 
 🎯 YOUR MISSION:
-Analyze this repository DEEPLY and generate a PERFECT, ERROR-FREE CI/CD pipeline that will work flawlessly on first deployment.
+Generate a valid YAML pipeline. This is NOT GitLab CI. This is NOT GitHub Actions. This YAML will be parsed and executed as individual shell commands on a real EC2 instance.
 
-🔍 CRITICAL ANALYSIS STEPS (DO THIS FIRST):
+⚠️ ABSOLUTE SSM EXECUTION RULES (STRICT ADHERENCE REQUIRED):
+1. NO YAML BLOCK SCALARS (- |): The executor runs each array item as an individual SSM shell command. NEVER use multi-line | blocks. Write every command as a separate flat string item in the script array.
+2. NO DOCKER / NO IMAGES: Remove all 'image:' fields.
+3. NO ARTIFACTS / NO CACHE: SSM stages run sequentially in /home/ec2-user/app. Remove all 'artifacts:', 'dependencies:', and 'cache:' blocks.
+4. KEEP IT SIMPLE: Only essential stages: install → build → deploy. Skip lint/test unless package.json explicitly has scripts for them.
+5. CLEAN LOGS: Use --loglevel=error for npm, --silent for yarn, --reporter=silent for pnpm. Filter out warnings with "| grep -v 'npm WARN' || true"
+6. EXPORT HOME: SSM runs in a non-login shell. The 'deploy' stage MUST start with:
+   - export HOME=/home/ec2-user
+   - export PM2_HOME=/home/ec2-user/.pm2
+7. NEVER USE npm ci: npm ci fails when package-lock.json is out of sync. The install stage MUST use:
+   - cd /home/ec2-user/app
+   - echo "Installing dependencies..."
+   - npm install -g serve pm2 --loglevel=error 2>&1 | grep -v "npm WARN" || true
+   - npm install --legacy-peer-deps --loglevel=error
+   - echo "✅ Dependencies installed"
+8. PROCESS MANAGEMENT BY LANGUAGE:
+   - Node.js/Python: Use PM2 for process management
+     * pm2 delete app 2>/dev/null || true
+     * pm2 start "<command>" --name app
+     * pm2 save --force
+   - Rust/Go (compiled binaries): Use nohup for background execution
+     * pkill -f "target/release" || true (or pkill -f "./app")
+     * nohup ./target/release/<binary> > /home/ec2-user/app.log 2>&1 &
+     * echo "✅ Process started"
+9. BIND TO 0.0.0.0: Set HOST=0.0.0.0 or --host 0.0.0.0.
+8. STATIC FRONTENDS (React/Vite/Next):
+   - BUILD FIRST: The build stage MUST run the actual build command without fallbacks
+   - Vite/React/Vue: npm run build (creates dist/ folder)
+   - Create React App: npm run build (creates build/ folder)
+   - Next.js: npm run build (creates .next/ folder)
+   - NEVER use "npm run build || echo 'No build'" - let build failures fail the stage
+   - Verify build output exists after build completes
+   - Serve using absolute paths:
+     * Vite (dist/): pm2 start "serve -s /home/ec2-user/app/dist -l ${port} --no-clipboard" --name app
+     * CRA (build/): pm2 start "serve -s /home/ec2-user/app/build -l ${port} --no-clipboard" --name app
+     * Next.js: pm2 start "npm start" --name app (Next.js has built-in server)
+9. LOCAL BINARIES AND TYPESCRIPT: Always prepend PATH="./node_modules/.bin:$PATH" before running any build command to ensure locally installed binaries like tsc, vite, eslint are found without global install. Also install TypeScript globally in the install stage:
+   - npm install -g typescript --no-audit
+   - export PATH="./node_modules/.bin:$PATH"
+   - npm run build
+   - echo "Verifying build output..."
+   - ls -la dist/ 2>/dev/null || ls -la build/ 2>/dev/null || echo "Build output directory not found!"
+10. CLEAN LOG OUTPUT:
+   - Use echo statements at START and END of each major step
+   - Format: "Installing dependencies..." → do work → "✅ Dependencies installed"
+   - Use --loglevel=error for npm to hide verbose output
+   - Use "2>&1 | tail -5" to show only last 5 lines of long outputs
+   - Use "| grep -v 'npm WARN' || true" to filter warnings
+   - DO NOT use verbose commands like ls -lah, find, du, or pm2 logs
+   - Keep each stage output under 10 lines total
 
-1. **Detect Framework (MOST IMPORTANT)**:
-   - NEXT.JS: Look for next.config.js OR "next" in dependencies OR pages/app directories
-     → Framework: Next.js
-     → Build: "next build" (ALWAYS required)
-     → Start: "next start"
-     → Type: fullstack
-
-   - VITE + REACT: Look for vite.config.js/ts AND "vite" in devDependencies
-     → Framework: Vite + React
-     → Build: "vite build" (creates dist/)
-     → Start: Serve static files from dist/
-     → Type: frontend
-
-   - CREATE REACT APP: Look for "react-scripts" in dependencies
-     → Framework: Create React App
-     → Build: "react-scripts build" (creates build/)
-     → Start: Serve static files from build/
-     → Type: frontend
-
-   - EXPRESS BACKEND: Look for "express" in dependencies + NO vite/next/webpack config
-     → Framework: Express.js
-     → Build: NONE (unless TypeScript)
-     → Start: "node index.js" or "node server.js"
-     → Type: backend
-
-2. **Detect Entry Points** - Find the ACTUAL main files:
-   - Next.js: pages/index.tsx, app/page.tsx
-   - Vite: src/main.tsx, index.html
-   - Express: index.js, server.js, src/server.js
-
-3. **READ ACTUAL PACKAGE.JSON SCRIPTS (CRITICAL)**:
-   ⚠️ USE THESE EXACT SCRIPTS - DO NOT MAKE UP COMMANDS!
-   - If "build" script exists in package.json → Use "npm run build"
-   - If "test" script exists → Use "npm run test"
-   - If "lint" script exists → Use "npm run lint"
-   - If script does NOT exist → SKIP that stage entirely
-
-   📦 Check the PACKAGE.JSON section above for actual available scripts!
-
-4. **Detect Build Requirements**:
-   - Frontend projects (Vite, CRA, Next.js): ALWAYS need build (if build script exists)
-   - Backend projects: Only if TypeScript or build script present
-   - NEVER add a build stage if no build script in package.json
-
-5. **Detect Dependencies**:
-   - Prisma (@prisma/client)? → Add "npx prisma generate" AFTER npm install
-   - TypeScript (tsconfig.json)? → May need "tsc" build
-   - Test framework (jest, vitest)? → Add test stage
-
-⚠️ CRITICAL REQUIREMENTS:
-1. **Valid YAML syntax** - PERFECT indentation (2 spaces), NO duplicate keys
-2. **Smart build detection** - Don't blindly add build stage for backends
-3. **Universal compatibility** - Works for frontend AND backend projects
-4. **Error handling** - Use --legacy-peer-deps, --force flags for npm
-5. **Entry point aware** - Know which file starts the app
-6. **Dependency intelligence** - Detect what's actually needed
-
-PIPELINE STRUCTURE:
-stages:
-  - install      # Install dependencies
-  - lint         # Code quality checks (if applicable)
-  - test         # Run tests (if applicable)
-  - build        # Build/compile the application
-  - deploy       # Deployment preparation
-
-LANGUAGE-SPECIFIC GUIDELINES:
-
-**Node.js / JavaScript / TypeScript:**
-⚠️ FRAMEWORK DETECTION IS ABSOLUTELY CRITICAL:
-
-🟢 NEXT.JS (Fullstack SSR):
-- Detection: next.config.js OR "next" in dependencies OR pages/ or app/ directory exists
-- Install: npm install --force --include=dev --legacy-peer-deps
-- Build: next build (ALWAYS REQUIRED - creates .next/ folder)
-- Start: next start --port 3000
-- Type: fullstack
-- Example:
-  build_application:
-    stage: build
-    script:
-      - npm run build  # Runs "next build"
-
-🟢 VITE + REACT (Frontend SPA):
-- Detection: vite.config.js OR vite.config.ts exists + "vite" in devDependencies
-- Install: npm install --force --include=dev --legacy-peer-deps
-- Build: vite build (REQUIRED - creates dist/ folder)
-- Start: Serve static files from dist/ on port 80
-- Type: frontend
-- Example:
-  build_application:
-    stage: build
-    script:
-      - npm run build  # Runs "vite build"
-
-🟢 CREATE REACT APP (Frontend):
-- Detection: "react-scripts" in dependencies
-- Install: npm install --force --include=dev --legacy-peer-deps
-- Build: react-scripts build (creates build/ folder)
-- Start: Serve static files from build/ on port 80
-- Type: frontend
-
-🟢 EXPRESS BACKEND (Pure Backend):
-- Detection: "express"/"fastify"/"koa" in dependencies + NO vite.config + NO next.config + NO webpack.config
-- Install: npm install --force --include=dev --legacy-peer-deps
-- Build: NONE (skip build stage entirely) unless TypeScript
-- Start: node index.js OR node server.js on port 80
-- Type: backend
-- Example:
-  build_application:
-    stage: build
-    script:
-      - echo "No build needed for pure Node.js backend"
-
-🟢 TYPESCRIPT BACKEND:
-- Detection: tsconfig.json + "express" + NO frontend tools
-- Install: npm install --force --include=dev --legacy-peer-deps
-- Build: tsc OR npm run build (compiles TS → JS)
-- Start: node dist/index.js
-- Type: backend
-
-⚡ SPECIAL CASES:
-- Prisma: Add "npx prisma generate" AFTER npm install in install stage
-- Monorepo: Check for workspaces in package.json
-- Hybrid: Some Next.js apps have API routes (still fullstack)
-
-**Python:**
-- Package manager: pip, pipenv, or poetry
-- Virtual environment: python -m venv venv && source venv/bin/activate
-- Install: pip install -r requirements.txt
-- Framework-specific: Django (python manage.py), Flask/FastAPI (python app.py)
-- WSGI: Use gunicorn for production
-
-**Rust:**
-- Build: cargo build --release
-- Test: cargo test
-- Run: ./target/release/<binary-name>
-
-**Go:**
-- Build: go build -o app
-- Test: go test ./...
-- Run: ./app
-
-**Java:**
-- Maven: mvn clean install, mvn package
-- Gradle: gradle build, gradle test
-- Run: java -jar target/*.jar
-
-**Ruby:**
-- Bundler: bundle install
-- Rails: rails server, bundle exec rails db:migrate
-- Run: bundle exec ruby app.rb
-
-**PHP:**
-- Composer: composer install --no-dev --optimize-autoloader
-- Laravel: php artisan migrate, php artisan serve
-- Run with: php -S 0.0.0.0:80
-
-**Docker:**
-- Build: docker build -t app:latest .
-- Run: docker run -d -p 80:PORT app:latest
-
-🎯 UNIVERSAL PIPELINE RULES:
-1. NO duplicate job names - each job must be unique
-2. Use descriptive job names: install_dependencies, build_application, run_tests, etc.
-3. Include 'script:' section for each job with actual commands
-4. Add 'image:' if needed (e.g., node:18-alpine, python:3.11-slim)
-5. Use 'allow_failure: true' for non-critical jobs (like linting)
-6. Include 'artifacts:' for build outputs
-7. Set proper 'stage:' for each job
-8. Add comments explaining what each stage does
-
-🚀 INTELLIGENCE REQUIREMENTS:
-- If it's a FRONTEND → Include build stage with npm run build
-- If it's a BACKEND → Skip build stage unless TypeScript
-- If has Prisma → Add "npx prisma generate" in install
-- If has tests → Add test stage but allow_failure: true
-- If has linting → Add lint stage but allow_failure: true
-
-💯 FINAL CHECKLIST BEFORE GENERATING:
-✅ Did I READ the actual package.json SCRIPTS section at the top?
-✅ Did I ONLY include stages for scripts that ACTUALLY exist in package.json?
-✅ Did I identify the EXACT framework (Next.js? Vite? Express? CRA?)?
-✅ Did I check for framework config files (next.config.js, vite.config.js)?
-✅ Did I check the directory structure (pages/, app/, src/, dist/)?
-✅ Did I determine if build is ACTUALLY needed (frontend=yes, pure backend=no)?
-✅ Did I include Prisma generate if @prisma/client exists?
-✅ Did I use correct install command with --force --include=dev --legacy-peer-deps?
-✅ Are all job names unique (install_dependencies, build_application, etc)?
-✅ Is the YAML syntax perfect (2-space indentation, no duplicate keys)?
-✅ Did I use "npm run <script-name>" for stages that exist in package.json scripts?
-✅ Did I SKIP stages (test/lint) if no corresponding script exists in package.json?
-✅ Did I consider the start command (next start vs node index.js vs static server)?
-
-OUTPUT:
-Provide ONLY the valid YAML pipeline configuration. No explanations, no markdown code blocks, just raw YAML starting with "stages:".
-DO NOT add extra formatting or explanations. Just the YAML.
-
-Example structure:
+🚀 PIPELINE STRUCTURE (MINIMAL - 3 STAGES ONLY):
 stages:
   - install
-  - lint
-  - test
   - build
+  - deploy
 
 variables:
   NODE_ENV: production
+  PORT: "${port}"
 
-install_dependencies:
-  stage: install
-  image: node:18-alpine
+🔥 CRITICAL RULES (MUST FOLLOW):
+1. Build verification MUST check BOTH dist/ AND build/ folders
+2. Deploy MUST serve whichever folder exists (dist/ OR build/)
+3. DO NOT hardcode "build/" only - Vite uses "dist/"!
+4. DO NOT use absolute paths like /home/ec2-user/app/build
+5. Use relative paths: "serve -s dist" or "serve -s build"
+
+⚡ SPEED REQUIREMENTS:
+- Each stage should have 3-5 commands MAX
+- Use "2>&1 | tail -10" to show only last 10 lines of output
+- NO lint, NO test stages (they slow down deployment)
+- Simple echo messages: "✅ Installed", "✅ Built", "✅ Deployed"
+
+🚫 DO NOT ADD THESE (FORBIDDEN):
+- DO NOT create postcss.config.js or postcss.config.cjs (unnecessary complexity)
+- DO NOT install typescript globally (use local ./node_modules/.bin/tsc)
+- DO NOT add extra configuration files
+- DO NOT add health checks or curl commands
+- DO NOT add extra echo statements beyond the required ones
+- COPY THE TEMPLATES EXACTLY - DO NOT MODIFY OR ADD COMMANDS
+
+📝 ULTRA-SIMPLE TEMPLATES (COPY THESE EXACTLY - DO NOT MODIFY):
+
+⚠️ CRITICAL: Build output folder varies by framework:
+   - Vite creates dist/
+   - Create React App creates build/
+   - ALWAYS check for BOTH: dist/ OR build/
+   - ALWAYS serve whichever exists: dist/ OR build/
+
+🔴 MANDATORY: Copy these templates WORD-FOR-WORD. DO NOT add extra commands. DO NOT modify. DO NOT add configurations.
+
+INSTALL STAGE (COPY EXACTLY - 6 COMMANDS ONLY):
   script:
-    - npm install --legacy-peer-deps
-  artifacts:
-    paths:
-      - node_modules/
-    expire_in: 1 hour
+    - cd /home/ec2-user/app
+    - npm install -g serve pm2 --loglevel=error 2>&1 | tail -1
+    - if grep -q '"vite".*"5\.' package.json && grep -q '"@vitejs/plugin-react".*"6\.' package.json; then npm pkg set devDependencies.@vitejs/plugin-react="^5.0.0" && echo "✅ Fixed vite/plugin-react version before install"; fi
+    - if grep -q "react-scripts" package.json 2>/dev/null; then npm install --save-dev @babel/plugin-proposal-private-property-in-object --legacy-peer-deps --loglevel=error 2>&1 | tail -1 && echo "✅ Babel plugin installed"; fi
+    - npm install --legacy-peer-deps --loglevel=error 2>&1 | tail -1
+    - echo "✅ Installed"
 
-lint_code:
-  stage: lint
-  image: node:18-alpine
+⚠️ DO NOT ADD: postcss config, typescript global install, extra echo statements, or ANY other commands!
+
+BUILD STAGE (COPY EXACTLY - 3 COMMANDS ONLY):
   script:
-    - npm run lint
-  allow_failure: true
+    - cd /home/ec2-user/app
+    - (npx vite build || npx react-scripts build || /usr/bin/vite build || npm run build) 2>&1 | tail -20
+    - if [ -f "dist/index.html" ] || [ -f "build/index.html" ]; then echo "✅ Built"; else exit 1; fi
 
-test_application:
-  stage: test
-  image: node:18-alpine
+⚠️ DO NOT ADD: postcss creation, extra verifications, ls commands, or ANY other commands!
+
+DEPLOY STAGE (COPY EXACTLY - 5 COMMANDS ONLY):
   script:
-    - npm run test
-  allow_failure: true
+    - export HOME=/home/ec2-user PM2_HOME=/home/ec2-user/.pm2
+    - cd /home/ec2-user/app
+    - pm2 delete app 2>/dev/null || true
+    - if [ -d "dist" ]; then pm2 start "serve -s dist -l ${port}" --name app; elif [ -d "build" ]; then pm2 start "serve -s build -l ${port}" --name app; else pm2 start "npm start" --name app; fi
+    - pm2 save --force && echo "✅ Deployed"
 
-build_application:
-  stage: build
-  image: node:18-alpine
-  script:
-    - npm run build
-  artifacts:
-    paths:
-      - dist/
-      - build/
-    expire_in: 30 days
+⚠️ DO NOT ADD: health checks, pm2 logs, sleep commands, curl tests, or ANY other commands!
 
-NOW GENERATE THE YAML PIPELINE:`;
+⚠️ WRONG EXAMPLES (DO NOT USE):
+❌ if [ -f "build/index.html" ]; then  ← ONLY checks build/, will fail for Vite!
+❌ pm2 start "serve -s build"  ← ONLY serves build/, will fail for Vite!
+❌ pm2 start "serve -s /home/ec2-user/app/build"  ← Uses absolute path, unnecessary!
+
+✅ CORRECT EXAMPLES (USE THESE):
+✅ if [ -f "dist/index.html" ] || [ -f "build/index.html" ]  ← Checks BOTH!
+✅ if [ -d "dist" ]; then serve dist; elif [ -d "build" ]; then serve build  ← Serves whichever exists!
+✅ serve -s dist  ← Uses relative path, simpler!
+
+🛡️ VERIFICATION (SIMPLE AND CLEAN):
+- Static builds: After build, simple check:
+  * if [ -d "dist" ] || [ -d "build" ]; then echo "✅ Build complete"; fi
+- DO NOT use verbose ls -lah or find commands - keep it simple
+- DO NOT use curl health checks - they can fail even when app is working
+- DO NOT use || echo to hide build failures - let builds fail properly
+- DO NOT use pm2 logs in deploy stage - it's too verbose
+- DO NOT use sleep commands longer than 2 seconds - unnecessary delays
+
+🎯 FINAL CHECKLIST - MUST VERIFY BEFORE GENERATING:
+- [ ] ONLY 3 stages: install → build → deploy (NO lint, NO test)?
+- [ ] Install stage has EXACTLY 6 commands (including Babel plugin check and vite/plugin-react version fix)?
+- [ ] Build stage has EXACTLY 3 commands (uses npx vite with fallbacks)?
+- [ ] Deploy stage has EXACTLY 5 commands?
+- [ ] Build stage checks BOTH dist/ AND build/: if [ -f "dist/index.html" ] || [ -f "build/index.html" ]?
+- [ ] Deploy stage serves BOTH dist/ AND build/: if [ -d "dist" ]; then serve dist; elif [ -d "build" ]; then serve build?
+- [ ] Using relative paths (dist, build) NOT absolute (/home/ec2-user/app/dist)?
+- [ ] Using "2>&1 | tail -20" to limit output?
+- [ ] Simple echo: "✅ Installed", "✅ Built", "✅ Deployed"?
+- [ ] NO verbose commands (ls, find, pm2 logs)?
+- [ ] NO hardcoded "build/" only (must support both dist/ and build/)?
+- [ ] NO postcss config creation?
+- [ ] NO typescript global install?
+- [ ] NO extra configuration files?
+- [ ] COPIED TEMPLATES EXACTLY WITHOUT MODIFICATIONS?
+
+🚨 CRITICAL WARNING: If you added ANYTHING beyond the templates above (postcss, typescript, extra commands), DELETE IT NOW!
+
+Provide ONLY raw YAML starting with "stages:". No markdown. No explanations.`;
 
   return prompt;
 }
 
 /**
- * Invoke Nova AI to generate YAML
+ * Invoke Claude Sonnet to generate YAML
  */
 async function invokeNovaAI(prompt: string): Promise<string> {
-  console.log('[AI-PIPELINE] 🚀 Invoking Amazon Nova Premier (Best Model)...');
+  console.log('[AI-PIPELINE] 🚀 Invoking Claude Sonnet (Best Model)...');
 
   const command = new ConverseCommand({
-    modelId: 'us.amazon.nova-premier-v1:0', // Upgraded to Premier - best model
+    modelId: process.env.BEDROCK_MODEL_ID || 'anthropic.claude-3-5-sonnet-20241022-v2:0', // Upgraded to Premier - best model
     messages: [
       {
         role: 'user',
@@ -384,9 +280,9 @@ async function invokeNovaAI(prompt: string): Promise<string> {
       },
     ],
     inferenceConfig: {
-      maxTokens: 8000, // Increased for more comprehensive analysis
-      temperature: 0.05, // Very low temperature for precise, deterministic output
-      topP: 0.9,
+      maxTokens: 12000, // Increased for comprehensive pipelines with deploy stages
+      // temperature: 0.05, // Very low temperature for precise, deterministic output
+      // topP: 0.9,
     },
   });
 
@@ -474,239 +370,238 @@ function getFallbackPipeline(langInfo: LanguageDetectionResult): GeneratedPipeli
 
 function getNodeJSFallbackPipeline(langInfo: LanguageDetectionResult): string {
   const pm = langInfo.packageManager || 'npm';
-  const installCmd = pm === 'npm' ? 'npm install --legacy-peer-deps' :
-                     pm === 'yarn' ? 'yarn install' :
-                     'pnpm install';
+  const port = langInfo.port || "3000";
 
   return `stages:
   - install
-${langInfo.hasLinter ? '  - lint\n' : ''}${langInfo.hasTests ? '  - test\n' : ''}  - build
+  - build
+  - deploy
 
 variables:
   NODE_ENV: production
-  CI: "true"
+  PORT: "${port}"
 
 install_dependencies:
   stage: install
   script:
-    - ${installCmd}
-  artifacts:
-    paths:
-      - node_modules/
-    expire_in: 1 hour
-${langInfo.hasLinter ? `
-lint_code:
-  stage: lint
-  script:
-    - ${pm} run lint
-  allow_failure: true
-` : ''}${langInfo.hasTests ? `
-test_application:
-  stage: test
-  script:
-    - ${pm} run test
-  allow_failure: true
-` : ''}
+    - cd /home/ec2-user/app
+    - npm install -g serve pm2 --loglevel=error 2>&1 | tail -1
+    - if grep -q '"vite".*"5\.' package.json && grep -q '"@vitejs/plugin-react".*"6\.' package.json; then npm pkg set devDependencies.@vitejs/plugin-react="^5.0.0" && echo "✅ Fixed vite/plugin-react version before install"; fi
+    - if grep -q "react-scripts" package.json 2>/dev/null; then npm install --save-dev @babel/plugin-proposal-private-property-in-object --legacy-peer-deps --loglevel=error 2>&1 | tail -1 && echo "✅ Babel plugin installed"; fi
+    - npm install --legacy-peer-deps --loglevel=error 2>&1 | tail -1
+    - echo "✅ Installed"
+
 build_application:
   stage: build
   script:
-    - ${pm} run build
-  artifacts:
-    paths:
-      - dist/
-      - build/
-      - .next/
-    expire_in: 30 days`;
+    - cd /home/ec2-user/app
+    - (npx vite build || npx react-scripts build || /usr/bin/vite build || npm run build) 2>&1 | tail -20
+    - if [ -f "dist/index.html" ] || [ -f "build/index.html" ]; then echo "✅ Built"; else echo "❌ Build failed" && exit 1; fi
+
+deploy_application:
+  stage: deploy
+  script:
+    - export HOME=/home/ec2-user
+    - export PM2_HOME=/home/ec2-user/.pm2
+    - cd /home/ec2-user/app
+    - pm2 delete app 2>/dev/null || true
+    - if [ -d "dist" ]; then pm2 start "serve -s dist -l ${port}" --name app; elif [ -d "build" ]; then pm2 start "serve -s build -l ${port}" --name app; else pm2 start "npm start" --name app; fi
+    - pm2 save --force
+    - echo "✅ Deployed"`;
 }
 
 function getPythonFallbackPipeline(langInfo: LanguageDetectionResult): string {
+  const port = langInfo.port || "8000";
   return `stages:
   - install
-${langInfo.hasLinter ? '  - lint\n' : ''}${langInfo.hasTests ? '  - test\n' : ''}  - build
+  - deploy
 
 variables:
-  PYTHONUNBUFFERED: "1"
-  PIP_CACHE_DIR: "\${CI_PROJECT_DIR}/.pip"
+  PORT: "${port}"
 
 install_dependencies:
   stage: install
   script:
-    - python3 -m venv venv
-    - source venv/bin/activate
-    - pip install --upgrade pip
-    - pip install -r requirements.txt
-  artifacts:
-    paths:
-      - venv/
-    expire_in: 1 hour
-${langInfo.hasLinter ? `
-lint_code:
-  stage: lint
+    - cd /home/ec2-user/app
+    - npm install -g pm2 --loglevel=error 2>&1 | tail -1
+    - pip install -r requirements.txt -q 2>&1 | tail -2
+    - echo "✅ Installed"
+
+deploy_application:
+  stage: deploy
   script:
-    - source venv/bin/activate
-    - pip install flake8
-    - flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
-  allow_failure: true
-` : ''}${langInfo.hasTests ? `
-test_application:
-  stage: test
-  script:
-    - source venv/bin/activate
-    - pip install pytest
-    - pytest tests/
-  allow_failure: true
-` : ''}
-build_application:
-  stage: build
-  script:
-    - source venv/bin/activate
-    - echo "Python application ready"
-  artifacts:
-    paths:
-      - venv/
-    expire_in: 30 days`;
+    - export HOME=/home/ec2-user PM2_HOME=/home/ec2-user/.pm2
+    - cd /home/ec2-user/app
+    - pm2 delete app 2>/dev/null || true
+    - pm2 start "uvicorn main:app --host 0.0.0.0 --port ${port}" --name app --interpreter none
+    - pm2 save --force
+    - echo "✅ Deployed"`;
 }
 
 function getRustFallbackPipeline(): string {
   return `stages:
+  - install
   - build
-  - test
+  - deploy
 
-build_application:
+install_dependencies:
+  stage: install
+  script:
+    - cd /home/ec2-user/app
+    - curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y 2>&1 | tail -2
+    - echo "✅ Installed"
+
+build:
   stage: build
   script:
-    - cargo build --release
-  artifacts:
-    paths:
-      - target/release/
-    expire_in: 30 days
+    - export HOME=/home/ec2-user
+    - source /home/ec2-user/.cargo/env
+    - cargo build --release 2>&1 | tail -10
+    - echo "✅ Built"
 
-test_application:
-  stage: test
+deploy_application:
+  stage: deploy
   script:
-    - cargo test
-  allow_failure: true`;
+    - export HOME=/home/ec2-user
+    - source /home/ec2-user/.cargo/env
+    - cd /home/ec2-user/app
+    - pkill -f "target/release" || true
+    - nohup ./target/release/rust_project > app.log 2>&1 &
+    - echo "✅ Deployed"`;
 }
 
 function getGoFallbackPipeline(): string {
   return `stages:
+  - install
   - build
-  - test
+  - deploy
 
-build_application:
+install_dependencies:
+  stage: install
+  script:
+    - cd /home/ec2-user/app
+    - npm install -g pm2 --no-audit
+    - sudo yum install -y golang
+
+build:
   stage: build
   script:
-    - go build -o app
-  artifacts:
-    paths:
-      - app
-    expire_in: 30 days
+    - go build -o app .
 
-test_application:
-  stage: test
+deploy_application:
+  stage: deploy
   script:
-    - go test ./...
-  allow_failure: true`;
+    - export HOME=/home/ec2-user
+    - export PM2_HOME=/home/ec2-user/.pm2
+    - pm2 delete app 2>/dev/null || true
+    - pm2 start "./app" --name app
+    - pm2 save --force
+    - sleep 8
+    - curl -sf http://localhost:3000/ && echo "✅ Healthy" || (pm2 logs app --lines 30 --nostream && exit 1)`;
 }
 
 function getJavaFallbackPipeline(langInfo: LanguageDetectionResult): string {
   const isMaven = langInfo.buildTool === 'maven';
 
   return `stages:
+  - install
   - build
-  - test
+  - deploy
+
+install_dependencies:
+  stage: install
+  script:
+    - cd /home/ec2-user/app
+    - npm install -g pm2 --no-audit
+    - sudo yum install -y java-17-amazon-corretto
 
 build_application:
   stage: build
   script:
-    - ${isMaven ? 'mvn clean package -DskipTests' : 'gradle build -x test'}
-  artifacts:
-    paths:
-      - ${isMaven ? 'target/*.jar' : 'build/libs/*.jar'}
-    expire_in: 30 days
+    - ${isMaven ? 'mvn clean package -DskipTests' : './gradlew build -x test'}
 
-test_application:
-  stage: test
+deploy_application:
+  stage: deploy
   script:
-    - ${isMaven ? 'mvn test' : 'gradle test'}
-  allow_failure: true`;
+    - export HOME=/home/ec2-user
+    - export PM2_HOME=/home/ec2-user/.pm2
+    - pm2 delete app 2>/dev/null || true
+    - pm2 start "java -jar ${isMaven ? 'target/*.jar' : 'build/libs/*.jar'}" --name app
+    - pm2 save --force
+    - sleep 8
+    - curl -sf http://localhost:8080/ && echo "✅ Healthy" || (pm2 logs app --lines 30 --nostream && exit 1)`;
 }
 
 function getRubyFallbackPipeline(): string {
   return `stages:
   - install
-  - test
-  - build
+  - deploy
 
 install_dependencies:
   stage: install
   script:
+    - cd /home/ec2-user/app
+    - npm install -g pm2 --no-audit
     - bundle install
-  artifacts:
-    paths:
-      - vendor/bundle/
-    expire_in: 1 hour
 
-test_application:
-  stage: test
+deploy_application:
+  stage: deploy
   script:
-    - bundle exec rspec
-  allow_failure: true
-
-build_application:
-  stage: build
-  script:
-    - echo "Ruby application ready"`;
+    - export HOME=/home/ec2-user
+    - export PM2_HOME=/home/ec2-user/.pm2
+    - pm2 delete app 2>/dev/null || true
+    - pm2 start "bundle exec ruby app.rb" --name app
+    - pm2 save --force
+    - sleep 8
+    - curl -sf http://localhost:3000/ && echo "✅ Healthy" || (pm2 logs app --lines 30 --nostream && exit 1)`;
 }
 
 function getPHPFallbackPipeline(): string {
   return `stages:
   - install
-  - test
-  - build
+  - deploy
 
 install_dependencies:
   stage: install
   script:
+    - cd /home/ec2-user/app
+    - npm install -g pm2 --no-audit
     - composer install --no-dev --optimize-autoloader
-  artifacts:
-    paths:
-      - vendor/
-    expire_in: 1 hour
 
-test_application:
-  stage: test
+deploy_application:
+  stage: deploy
   script:
-    - ./vendor/bin/phpunit
-  allow_failure: true
-
-build_application:
-  stage: build
-  script:
-    - echo "PHP application ready"`;
+    - export HOME=/home/ec2-user
+    - export PM2_HOME=/home/ec2-user/.pm2
+    - pm2 delete app 2>/dev/null || true
+    - pm2 start "php -S 0.0.0.0:8000" --name app
+    - pm2 save --force
+    - sleep 8
+    - curl -sf http://localhost:8000/ && echo "✅ Healthy" || (pm2 logs app --lines 30 --nostream && exit 1)`;
 }
 
 function getDockerFallbackPipeline(): string {
-  return `stages:
-  - build
-
-build_docker_image:
-  stage: build
-  script:
-    - docker build -t app:latest .
-  artifacts:
-    paths:
-      - Dockerfile
-    expire_in: 30 days`;
+  // Docker is no longer supported for native EC2 execution; redirect to generic
+  return getGenericFallbackPipeline();
 }
 
 function getGenericFallbackPipeline(): string {
   return `stages:
-  - build
+  - install
+  - deploy
 
-build_application:
-  stage: build
+install_dependencies:
+  stage: install
   script:
-    - echo "Building application..."
-    - echo "Please customize this pipeline for your project"`;
+    - cd /home/ec2-user/app
+    - npm install -g pm2 --no-audit
+
+deploy_application:
+  stage: deploy
+  script:
+    - export HOME=/home/ec2-user
+    - export PM2_HOME=/home/ec2-user/.pm2
+    - pm2 delete app || true
+    - pm2 start "npm start" --name app
+    - pm2 save --force`;
 }

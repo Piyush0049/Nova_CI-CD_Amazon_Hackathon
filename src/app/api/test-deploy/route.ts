@@ -105,28 +105,28 @@ export async function GET(request: NextRequest) {
     });
   }
 
-  // Test 4: Nova AI Configuration
+  // Test 4: Claude Sonnet Configuration
   try {
-    const modelId = 'us.amazon.nova-premier-v1:0';
+    const modelId = process.env.BEDROCK_MODEL_ID || 'anthropic.claude-3-5-sonnet-20241022-v2:0';
     const maxTokens = 8000;
     const temperature = 0.15;
 
     if (modelId && maxTokens > 0 && temperature >= 0) {
       tests.results.push({
-        test: 'Nova AI Configuration',
+        test: 'Claude Sonnet Configuration',
         status: 'PASS',
         message: `Model: ${modelId}, Tokens: ${maxTokens}, Temp: ${temperature}`,
       });
     } else {
       tests.results.push({
-        test: 'Nova AI Configuration',
+        test: 'Claude Sonnet Configuration',
         status: 'FAIL',
         message: 'Invalid configuration',
       });
     }
   } catch (error: any) {
     tests.results.push({
-      test: 'Nova AI Configuration',
+      test: 'Claude Sonnet Configuration',
       status: 'FAIL',
       message: error.message,
     });

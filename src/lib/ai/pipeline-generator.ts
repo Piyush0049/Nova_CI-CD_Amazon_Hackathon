@@ -1,4 +1,4 @@
-// Nova AI Pipeline Generator Service
+// Claude Sonnet Pipeline Generator Service
 
 import { BedrockRuntimeClient, ConverseCommand } from '@aws-sdk/client-bedrock-runtime';
 
@@ -27,7 +27,7 @@ export class PipelineGenerator {
   }
 
   /**
-   * Generate CI/CD pipeline YAML using Nova AI
+   * Generate CI/CD pipeline YAML using Claude Sonnet
    */
   async generatePipeline(context: RepositoryContext): Promise<string> {
     console.log('[PIPELINE-GEN] Generating pipeline for:', context.name);
@@ -37,8 +37,8 @@ export class PipelineGenerator {
     const prompt = this.buildPrompt(context);
 
     try {
-      console.log('[PIPELINE-GEN] Invoking Nova AI...');
-      const response = await this.invokeNova(prompt);
+      console.log('[PIPELINE-GEN] Invoking Claude Sonnet...');
+      const response = await this.invokeClaudeSonnet(prompt);
       const yaml = this.extractYAML(response);
 
       // Validate the YAML doesn't have duplicate keys
@@ -77,7 +77,7 @@ export class PipelineGenerator {
   }
 
   /**
-   * Build prompt for Nova AI
+   * Build prompt for Claude Sonnet
    */
   private buildPrompt(context: RepositoryContext): string {
     // Extract package.json scripts if available
@@ -164,11 +164,11 @@ OUTPUT REQUIREMENTS:
   }
 
   /**
-   * Invoke Nova AI model using Converse API
+   * Invoke Claude Sonnet model using Converse API
    */
-  private async invokeNova(prompt: string): Promise<string> {
+  private async invokeClaudeSonnet(prompt: string): Promise<string> {
     const command = new ConverseCommand({
-      modelId: 'us.amazon.nova-pro-v1:0', // Changed to Pro for better structured output
+      modelId: process.env.BEDROCK_MODEL_ID || 'anthropic.claude-3-5-sonnet-20241022-v2:0', // Changed to Pro for better structured output
       messages: [
         {
           role: 'user',
@@ -181,8 +181,8 @@ OUTPUT REQUIREMENTS:
       ],
       inferenceConfig: {
         maxTokens: 2500,
-        temperature: 0.1, // Lower temperature for deterministic YAML
-        topP: 0.9,
+        // temperature: 0.1, // Lower temperature for deterministic YAML
+        // topP: 0.9,
       }
     });
 
@@ -227,7 +227,6 @@ OUTPUT REQUIREMENTS:
     const lines = yaml.split('\n');
     const seenKeys = new Set<string>();
     const result: string[] = [];
-    let currentIndent = 0;
     let skipUntilIndent = -1;
 
     for (let i = 0; i < lines.length; i++) {

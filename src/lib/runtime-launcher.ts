@@ -73,7 +73,7 @@ function generatePM2Config(config: RuntimeConfig): string {
     name: 'app',
     script: '${script}',
 ${argsLine}
-    cwd: '/home/ec2-user/runtime',
+    cwd: '/home/ec2-user/app',
     instances: 1,
     exec_mode: 'fork',
     autorestart: true,
@@ -132,7 +132,7 @@ After=network.target
 [Service]
 Type=simple
 User=ec2-user
-WorkingDirectory=/home/ec2-user/runtime
+WorkingDirectory=/home/ec2-user/app
 Environment="PORT=${config.port}"
 Environment="HOST=0.0.0.0"
 ${envVarsString}
@@ -160,19 +160,20 @@ export function generateRuntimeLaunchCommands(config: RuntimeConfig): string[] {
     `echo "[RUNTIME] Language: ${config.language}"`,
     `echo "[RUNTIME] Start Command: ${config.startCommand}"`,
     'echo "════════════════════════════════════════════════════════════"',
-    'cd /home/ec2-user/runtime',
+    'cd /home/ec2-user/app',
     'mkdir -p /home/ec2-user/logs',
+    'sudo chown -R ec2-user:ec2-user /home/ec2-user/app',
   ];
 
   // Node.js with PM2
   if (config.language.includes('Node') || config.language.includes('JavaScript') || config.language.includes('TypeScript')) {
     commands.push(
       'echo "[RUNTIME] Verifying runtime directory..."',
-      'ls -la /home/ec2-user/runtime/',
+      'ls -la /home/ec2-user/app/',
       'echo "[RUNTIME] Checking for package.json..."',
-      'test -f /home/ec2-user/runtime/package.json && echo "✅ package.json found" || echo "❌ package.json missing!"',
+      'test -f /home/ec2-user/app/package.json && echo "✅ package.json found" || echo "❌ package.json missing!"',
       'echo "[RUNTIME] Checking for node_modules..."',
-      'test -d /home/ec2-user/runtime/node_modules && echo "✅ node_modules found" || echo "❌ node_modules missing!"',
+      'test -d /home/ec2-user/app/node_modules && echo "✅ node_modules found" || echo "❌ node_modules missing!"',
       '',
       'echo "[RUNTIME] ⚠️  IMPORTANT: Your app MUST use these environment variables:"',
       `echo "[RUNTIME]   - PORT=${config.port} (from AI detection)"`,
@@ -181,17 +182,28 @@ export function generateRuntimeLaunchCommands(config: RuntimeConfig): string[] {
       '',
       'echo "[RUNTIME] Installing PM2 process manager..."',
       'sudo npm install -g pm2 --silent',
-      'pm2 delete all 2>/dev/null || true',
+      'su - ec2-user -c "pm2 delete all 2>/dev/null || true"',
       'echo "[RUNTIME] Creating PM2 configuration..."',
-      `cat > ecosystem.config.js << 'PM2EOF'`,
+      '# Ensure the file is owned by ec2-user',
+      `sudo -u ec2-user tee /home/ec2-user/app/ecosystem.config.js > /dev/null << 'PM2EOF'`,
       generatePM2Config(config),
       'PM2EOF',
       'echo "[RUNTIME] PM2 Configuration:"',
       'cat ecosystem.config.js',
       'echo "[RUNTIME] Starting application with PM2..."',
-      'pm2 start ecosystem.config.js',
-      'pm2 save',
-      'pm2 startup systemd -u ec2-user --hp /home/ec2-user 2>/dev/null || true',
+      '# SPECIAL: For static sites (React/Vite), if build/dist folders exist, use serve instead of npm start',
+      '# This is much more reliable than running the dev server (npm start) on EC2',
+      'if ([ -d "build" ] || [ -d "dist" ]) && [[ "' + config.startCommand + '" == *"npm start"* || "' + config.startCommand + '" == *"npm run dev"* ]]; then',
+      '  echo "[RUNTIME] ℹ️  Static folder detected. Installing and using \"serve\" for production performance..."',
+      '  sudo npm install -g serve --silent',
+      '  BUILD_DIR="build"',
+      '  if [ -d "dist" ]; then BUILD_DIR="dist"; fi',
+      '  su - ec2-user -c "cd /home/ec2-user/app && pm2 start \"serve -s $BUILD_DIR -l ' + config.port + '\" --name \"static-app\""',
+      'else',
+      '  su - ec2-user -c "cd /home/ec2-user/app && pm2 start ecosystem.config.js"',
+      'fi',
+      'su - ec2-user -c "pm2 save"',
+      'sudo pm2 startup systemd -u ec2-user --hp /home/ec2-user 2>/dev/null || true',
       'sleep 3',
       'echo "[RUNTIME] PM2 Status:"',
       'pm2 list',
@@ -242,7 +254,7 @@ export function generateRuntimeLaunchCommands(config: RuntimeConfig): string[] {
       `${envPrefix}nohup ${config.startCommand} > /home/ec2-user/logs/output.log 2>&1 &`,
       'APP_PID=$!',
       'echo "[RUNTIME] Application started with PID: $APP_PID"',
-      'echo $APP_PID > /home/ec2-user/runtime/app.pid',
+      'echo $APP_PID > /home/ec2-user/app/app.pid',
       'sleep 5',
       'if kill -0 $APP_PID 2>/dev/null; then',
       '  echo "[RUNTIME] ✅ Application is running"',
