@@ -17,6 +17,14 @@ export interface UniversalProjectFiles {
   // Language Detection Files
   detectedLanguages: string[];
 
+  // VERSION FILES (CRITICAL for dynamic version detection)
+  nvmrc?: string;           // Node.js version: .nvmrc
+  nodeVersion?: string;     // Node.js version: .node-version
+  pythonVersion?: string;   // Python version: .python-version
+  runtimeTxt?: string;      // Python version: runtime.txt (Heroku-style)
+  goVersion?: string;       // Go version: .go-version
+  rubyVersion?: string;     // Ruby version: .ruby-version
+
   // Node.js / JavaScript / TypeScript
   packageJson?: string;
   packageLockJson?: string;
@@ -103,6 +111,31 @@ export async function fetchUniversalProjectFiles(instanceId: string): Promise<Un
       'echo "===FILE_LIST_START==="',
       'find . -maxdepth 2 -type f -not -path "*/.*" | head -50 || echo "NONE"',
       'echo "===FILE_LIST_END==="',
+
+      // VERSION FILES (CRITICAL for accurate version detection)
+      'echo "===NVMRC_START==="',
+      'cat .nvmrc 2>/dev/null || echo "NOT_FOUND"',
+      'echo "===NVMRC_END==="',
+
+      'echo "===NODE_VERSION_START==="',
+      'cat .node-version 2>/dev/null || echo "NOT_FOUND"',
+      'echo "===NODE_VERSION_END==="',
+
+      'echo "===PYTHON_VERSION_START==="',
+      'cat .python-version 2>/dev/null || echo "NOT_FOUND"',
+      'echo "===PYTHON_VERSION_END==="',
+
+      'echo "===RUNTIME_TXT_START==="',
+      'cat runtime.txt 2>/dev/null || echo "NOT_FOUND"',
+      'echo "===RUNTIME_TXT_END==="',
+
+      'echo "===GO_VERSION_START==="',
+      'cat .go-version 2>/dev/null || echo "NOT_FOUND"',
+      'echo "===GO_VERSION_END==="',
+
+      'echo "===RUBY_VERSION_START==="',
+      'cat .ruby-version 2>/dev/null || echo "NOT_FOUND"',
+      'echo "===RUBY_VERSION_END==="',
 
       // Node.js / JavaScript / TypeScript
       'echo "===PACKAGE_JSON_START==="',
@@ -311,6 +344,14 @@ export async function fetchUniversalProjectFiles(instanceId: string): Promise<Un
         // Extract all files
         files.directories = extractContent('===DIRECTORIES_START===', '===DIRECTORIES_END===')?.split('\n').filter(Boolean);
         files.fileList = extractContent('===FILE_LIST_START===', '===FILE_LIST_END===')?.split('\n').filter(Boolean);
+
+        // VERSION FILES (extract first for priority)
+        files.nvmrc = extractContent('===NVMRC_START===', '===NVMRC_END===');
+        files.nodeVersion = extractContent('===NODE_VERSION_START===', '===NODE_VERSION_END===');
+        files.pythonVersion = extractContent('===PYTHON_VERSION_START===', '===PYTHON_VERSION_END===');
+        files.runtimeTxt = extractContent('===RUNTIME_TXT_START===', '===RUNTIME_TXT_END===');
+        files.goVersion = extractContent('===GO_VERSION_START===', '===GO_VERSION_END===');
+        files.rubyVersion = extractContent('===RUBY_VERSION_START===', '===RUBY_VERSION_END===');
 
         // Node.js
         files.packageJson = extractContent('===PACKAGE_JSON_START===', '===PACKAGE_JSON_END===');

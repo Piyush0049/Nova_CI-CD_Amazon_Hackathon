@@ -64,6 +64,7 @@ export async function GET(
       deploymentId: deployment._id.toString(),
       status: deployment.status,
       publicIp: deployment.publicIp,
+      port: deployment.port || 80, // Default to 80 if not specified
       repoFullName: deployment.repoFullName,
       deployedAt: deployment.deployedAt,
       logs,

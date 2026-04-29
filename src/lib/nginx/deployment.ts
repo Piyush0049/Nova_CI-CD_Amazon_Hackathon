@@ -10,7 +10,7 @@ import {
   generatePM2Commands,
   ProjectDetectionResult,
 } from './config-generator';
-import { extractPortFromSource } from '../universal-language-analyzer';
+import { extractPortFromSource, detectPortWithFallback } from '../enhanced-port-detector';
 
 const ssmClient = new SSMClient({
   region: process.env.AWS_REGION || 'us-east-1',

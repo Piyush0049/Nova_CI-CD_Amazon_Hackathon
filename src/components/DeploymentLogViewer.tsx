@@ -10,6 +10,7 @@ interface DeploymentLog {
   instanceId: string;
   status: 'deploying' | 'success' | 'failed';
   publicIp?: string;
+  port?: number;
   repoFullName: string;
   deployedAt: string;
   deploymentId?: string;
@@ -240,13 +241,13 @@ export default function DeploymentLogViewer({ instanceId, deploymentId, onClose,
 
               {logs.publicIp && (
                 <a
-                  href={`http://${logs.publicIp}`}
+                  href={logs.port && logs.port !== 80 ? `http://${logs.publicIp}:${logs.port}` : `http://${logs.publicIp}`}
                   target="_blank"
                   rel="noopener noreferrer"
                   className="flex items-center gap-2 text-sm text-cyan-400 hover:text-cyan-300 transition-colors"
                 >
                   <FaExternalLinkAlt className="w-3 h-3" />
-                  <span className="font-mono">{logs.publicIp}</span>
+                  <span className="font-mono">{logs.publicIp}{logs.port && logs.port !== 80 ? `:${logs.port}` : ''}</span>
                 </a>
               )}
             </div>
@@ -438,12 +439,12 @@ export default function DeploymentLogViewer({ instanceId, deploymentId, onClose,
                         <p className="text-sm text-green-400">
                           Your application is now live at{' '}
                           <a
-                            href={`http://${logs.publicIp}`}
+                            href={logs.port && logs.port !== 80 ? `http://${logs.publicIp}:${logs.port}` : `http://${logs.publicIp}`}
                             target="_blank"
                             rel="noopener noreferrer"
                             className="font-mono font-semibold underline hover:text-green-300 transition-colors"
                           >
-                            http://{logs.publicIp}
+                            http://{logs.publicIp}{logs.port && logs.port !== 80 ? `:${logs.port}` : ''}
                           </a>
                         </p>
                       </div>

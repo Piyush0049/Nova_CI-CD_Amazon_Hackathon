@@ -34,6 +34,11 @@ export interface IDeployment extends Document {
     startupWarning?: string;
   };
   rawLogs?: string;
+  // Webhook trigger info
+  triggeredBy?: 'manual' | 'webhook';
+  commitSha?: string;
+  commitMessage?: string;
+  commitAuthor?: string;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -136,6 +141,21 @@ const DeploymentSchema = new Schema<IDeployment>(
       default: {},
     },
     rawLogs: {
+      type: String,
+    },
+    // Webhook trigger info
+    triggeredBy: {
+      type: String,
+      enum: ['manual', 'webhook'],
+      default: 'manual',
+    },
+    commitSha: {
+      type: String,
+    },
+    commitMessage: {
+      type: String,
+    },
+    commitAuthor: {
       type: String,
     },
   },

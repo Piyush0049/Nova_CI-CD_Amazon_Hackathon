@@ -35,6 +35,14 @@ export interface UniversalProjectAnalysis {
   needsRuntime: boolean; // true for Node.js, Python; false for Rust, Go
   runtimeVersion?: string; // 'node 20', 'python 3.11', etc.
 
+  // DYNAMIC VERSION DETECTION (AI-detected from project files)
+  pythonVersion?: string; // '3.11', '3.10', '3.9' (from runtime.txt, .python-version, or code analysis)
+  nodeVersion?: string; // '20', '18', '16' (from .nvmrc, package.json engines, or default)
+  goVersion?: string; // '1.22', '1.21' (from go.mod)
+  javaVersion?: string; // '17', '11', '8' (from pom.xml, build.gradle)
+  rubyVersion?: string; // '3.2', '3.1' (from .ruby-version, Gemfile)
+  phpVersion?: string; // '8.2', '8.1' (from composer.json)
+
   // Advanced features
   hasTests: boolean;
   hasLinter: boolean;
@@ -70,18 +78,69 @@ export async function analyzeUniversalProject(
   console.log('[UNIVERSAL-ANALYZER] Starting universal project analysis...');
   console.log('[UNIVERSAL-ANALYZER] Detected languages:', files.detectedLanguages.join(', ') || 'Unknown');
 
+  // Log version files found (critical for debugging)
+  console.log('[UNIVERSAL-ANALYZER] ═══════════════════════════════════════════');
+  console.log('[UNIVERSAL-ANALYZER] 📁 VERSION FILES IN REPOSITORY:');
+  const versionFiles = [];
+  if (files.nvmrc) versionFiles.push('.nvmrc (Node.js: ' + files.nvmrc.trim().split('\n')[0] + ')');
+  if (files.nodeVersion) versionFiles.push('.node-version (Node.js: ' + files.nodeVersion.trim().split('\n')[0] + ')');
+  if (files.pythonVersion) versionFiles.push('.python-version (Python: ' + files.pythonVersion.trim().split('\n')[0] + ')');
+  if (files.runtimeTxt) versionFiles.push('runtime.txt (Python: ' + files.runtimeTxt.trim().split('\n')[0] + ')');
+  if (files.goVersion) versionFiles.push('.go-version (Go: ' + files.goVersion.trim().split('\n')[0] + ')');
+  if (files.rubyVersion) versionFiles.push('.ruby-version (Ruby: ' + files.rubyVersion.trim().split('\n')[0] + ')');
+
+  if (versionFiles.length > 0) {
+    versionFiles.forEach(vf => console.log('[UNIVERSAL-ANALYZER]   ✓', vf));
+  } else {
+    console.log('[UNIVERSAL-ANALYZER]   ⚠️ No version files found - will analyze manifests and code');
+  }
+  console.log('[UNIVERSAL-ANALYZER] ═══════════════════════════════════════════');
+
   try {
     const prompt = buildUniversalAnalysisPrompt(files);
     const response = await invokeNovaPremier(prompt);
     const analysis = parseAnalysis(response, files);
 
     console.log('[UNIVERSAL-ANALYZER] ✓ Analysis complete');
-    console.log('[UNIVERSAL-ANALYZER] Language:', analysis.language);
-    console.log('[UNIVERSAL-ANALYZER] Framework:', analysis.framework);
-    console.log('[UNIVERSAL-ANALYZER] Build tool:', analysis.buildTool);
+    console.log('[UNIVERSAL-ANALYZER] ═══════════════════════════════════════════');
+    console.log('[UNIVERSAL-ANALYZER] 📊 PROJECT DETECTION RESULTS:');
+    console.log('[UNIVERSAL-ANALYZER]   - Language:', analysis.language);
+    console.log('[UNIVERSAL-ANALYZER]   - Framework:', analysis.framework);
+    console.log('[UNIVERSAL-ANALYZER]   - Project Type:', analysis.projectType);
+    console.log('[UNIVERSAL-ANALYZER]   - Build tool:', analysis.buildTool);
+    console.log('[UNIVERSAL-ANALYZER]   - Output dir:', analysis.outputDir);
+    console.log('[UNIVERSAL-ANALYZER] ═══════════════════════════════════════════');
+
+    // VERSION DETECTION RESULTS (show prominently)
+    console.log('[UNIVERSAL-ANALYZER] ═══════════════════════════════════════════');
+    console.log('[UNIVERSAL-ANALYZER] 🔢 DETECTED VERSIONS (AI-analyzed):');
+    if (analysis.pythonVersion) {
+      console.log('[UNIVERSAL-ANALYZER]   - Python:', analysis.pythonVersion);
+    }
+    if (analysis.nodeVersion) {
+      console.log('[UNIVERSAL-ANALYZER]   - Node.js:', analysis.nodeVersion);
+    }
+    if (analysis.goVersion) {
+      console.log('[UNIVERSAL-ANALYZER]   - Go:', analysis.goVersion);
+    }
+    if (analysis.javaVersion) {
+      console.log('[UNIVERSAL-ANALYZER]   - Java:', analysis.javaVersion);
+    }
+    if (analysis.rubyVersion) {
+      console.log('[UNIVERSAL-ANALYZER]   - Ruby:', analysis.rubyVersion);
+    }
+    if (analysis.phpVersion) {
+      console.log('[UNIVERSAL-ANALYZER]   - PHP:', analysis.phpVersion);
+    }
+    if (!analysis.pythonVersion && !analysis.nodeVersion && !analysis.goVersion && !analysis.javaVersion && !analysis.rubyVersion && !analysis.phpVersion) {
+      console.log('[UNIVERSAL-ANALYZER]   ⚠️ No specific versions detected - will use defaults');
+    }
+    console.log('[UNIVERSAL-ANALYZER] ═══════════════════════════════════════════');
+
     console.log('[UNIVERSAL-ANALYZER] Install:', analysis.installCommand);
     console.log('[UNIVERSAL-ANALYZER] Build:', analysis.buildCommand);
     console.log('[UNIVERSAL-ANALYZER] Start:', analysis.startCommand);
+    console.log('[UNIVERSAL-ANALYZER] Port:', analysis.port);
 
     return analysis;
   } catch (error: any) {
@@ -101,6 +160,47 @@ function buildUniversalAnalysisPrompt(files: UniversalProjectFiles): string {
   fileContents += files.detectedLanguages.join(', ') || 'Unknown';
   fileContents += '\n\n';
 
+  // VERSION FILES (SHOW PROMINENTLY AT TOP FOR AI TO SEE FIRST!)
+  fileContents += `═══════════════════════════════════════════════════════════════════\n`;
+  fileContents += `🔢 VERSION FILES (CRITICAL - USE THESE FOR VERSION DETECTION!)\n`;
+  fileContents += `═══════════════════════════════════════════════════════════════════\n\n`;
+
+  if (files.nvmrc) {
+    fileContents += `### .nvmrc (Node.js version)\n\`\`\`\n${files.nvmrc}\n\`\`\`\n`;
+    fileContents += `👉 USE THIS FOR nodeVersion!\n\n`;
+  }
+
+  if (files.nodeVersion) {
+    fileContents += `### .node-version (Node.js version)\n\`\`\`\n${files.nodeVersion}\n\`\`\`\n`;
+    fileContents += `👉 USE THIS FOR nodeVersion!\n\n`;
+  }
+
+  if (files.pythonVersion) {
+    fileContents += `### .python-version (Python version)\n\`\`\`\n${files.pythonVersion}\n\`\`\`\n`;
+    fileContents += `👉 USE THIS FOR pythonVersion!\n\n`;
+  }
+
+  if (files.runtimeTxt) {
+    fileContents += `### runtime.txt (Python version - Heroku style)\n\`\`\`\n${files.runtimeTxt}\n\`\`\`\n`;
+    fileContents += `👉 USE THIS FOR pythonVersion! (extract version number)\n\n`;
+  }
+
+  if (files.goVersion) {
+    fileContents += `### .go-version (Go version)\n\`\`\`\n${files.goVersion}\n\`\`\`\n`;
+    fileContents += `👉 USE THIS FOR goVersion!\n\n`;
+  }
+
+  if (files.rubyVersion) {
+    fileContents += `### .ruby-version (Ruby version)\n\`\`\`\n${files.rubyVersion}\n\`\`\`\n`;
+    fileContents += `👉 USE THIS FOR rubyVersion!\n\n`;
+  }
+
+  if (!files.nvmrc && !files.nodeVersion && !files.pythonVersion && !files.runtimeTxt && !files.goVersion && !files.rubyVersion) {
+    fileContents += `⚠️ NO VERSION FILES FOUND - Will need to detect from manifest files or use defaults\n\n`;
+  }
+
+  fileContents += `═══════════════════════════════════════════════════════════════════\n\n`;
+
   // Add directory structure
   if (files.directories && files.directories.length > 0) {
     fileContents += `=== DIRECTORY STRUCTURE ===\n`;
@@ -113,6 +213,28 @@ function buildUniversalAnalysisPrompt(files: UniversalProjectFiles): string {
     fileContents += `=== FILE LIST (Top Level) ===\n`;
     fileContents += files.fileList.slice(0, 30).join('\n');
     fileContents += '\n\n';
+
+    // CRITICAL: Analyze file list for frontend indicators
+    const hasIndexHtml = files.fileList.some(f => f.toLowerCase().includes('index.html'));
+    const hasViteConfig = files.fileList.some(f => f.toLowerCase().includes('vite.config'));
+    const hasTailwindConfig = files.fileList.some(f => f.toLowerCase().includes('tailwind.config'));
+    const hasPublicFolder = files.fileList.some(f => f.toLowerCase().includes('./public'));
+    const hasSrcFolder = files.fileList.some(f => f.toLowerCase().includes('./src'));
+
+    if (hasIndexHtml || hasViteConfig) {
+      fileContents += `⚠️⚠️⚠️ CRITICAL FRONTEND INDICATORS DETECTED ⚠️⚠️⚠️\n`;
+      if (hasIndexHtml) fileContents += `✓ index.html FOUND → This is a FRONTEND project!\n`;
+      if (hasViteConfig) fileContents += `✓ vite.config.* FOUND → This is a FRONTEND project!\n`;
+      if (hasTailwindConfig) fileContents += `✓ tailwind.config.js FOUND → Frontend styling framework!\n`;
+      if (hasPublicFolder) fileContents += `✓ public/ folder FOUND → Static assets folder (frontend)!\n`;
+      if (hasSrcFolder) fileContents += `✓ src/ folder FOUND → Source code folder!\n`;
+      fileContents += `\n`;
+      fileContents += `🚨 DO NOT classify this as Express.js or backend!\n`;
+      fileContents += `🚨 This is a Vite FRONTEND project even if Express exists in server/ folder!\n`;
+      fileContents += `🚨 Framework should be: "Vite" or "Vite + React"\n`;
+      fileContents += `🚨 Project Type should be: "frontend"\n`;
+      fileContents += `\n`;
+    }
   }
 
   // Add all file contents
@@ -210,6 +332,47 @@ You MUST identify:
 7. Environment variables needed
 
 ═══════════════════════════════════════════════════════════════════
+🚨 STEP 0: CHECK FOR FRONTEND PROJECT FIRST (HIGHEST PRIORITY!)
+═══════════════════════════════════════════════════════════════════
+
+**BEFORE checking any other language rules, YOU MUST check if this is a frontend project:**
+
+**FRONTEND DETECTION RULES (CHECK THESE FIRST!):**
+
+1. **Check FILE LIST above for these files:**
+   - index.html → 99% chance this is FRONTEND
+   - vite.config.ts or vite.config.js → FRONTEND (Vite project)
+   - tailwind.config.js → FRONTEND (Tailwind CSS)
+   - public/ folder → FRONTEND (static assets)
+
+2. **If index.html OR vite.config.* exists:**
+   - **framework**: "Vite" or "Vite + React" (NOT "Express.js"!)
+   - **projectType**: "frontend" (NOT "backend"!)
+   - **buildCommand**: "npm run build"
+   - **startCommand**: "echo \"Static files served by Nginx\""
+   - **outputDir**: "dist"
+   - **port**: "80"
+
+3. **Common mistake to AVOID:**
+   - ❌ WRONG: Seeing Express.js in server/ folder → classifying as "Express.js backend"
+   - ✅ CORRECT: If index.html exists → It's a "Vite frontend" (Express is just for dev server or API)
+
+4. **If you see BOTH index.html AND Express:**
+   - The project is FRONTEND (Vite)
+   - Express is either:
+     - A dev dependency for local testing
+     - Backend API in server/ folder (but project type is still "frontend")
+   - **YOU MUST classify as FRONTEND, not backend!**
+
+**Example of CORRECT detection:**
+\`\`\`
+Files: index.html, vite.config.ts, src/, public/, server/index.js (has Express)
+                                                    ↓
+Correct: framework="Vite + React", projectType="frontend"
+Wrong: framework="Express.js", projectType="backend"  ← DON'T DO THIS!
+\`\`\`
+
+═══════════════════════════════════════════════════════════════════
 🔍 LANGUAGE DETECTION RULES (Priority Order):
 ═══════════════════════════════════════════════════════════════════
 
@@ -247,14 +410,19 @@ You MUST identify:
   * For Solana: need \`solana-cli\` and \`anchor-cli\`
 
 🐹 **GO DETECTION:**
-- Files: go.mod, go.sum, main.go
+- Files: go.mod, go.sum, main.go, .go-version
 - Framework detection:
   * "github.com/gin-gonic/gin" → Gin web framework
   * "github.com/gofiber/fiber" → Fiber
   * "github.com/gorilla/mux" → Gorilla Mux
   * "net/http" imports → Standard library HTTP server
+- **VERSION DETECTION (CRITICAL!):**
+  * Check go.mod: "go 1.22" → use 1.22
+  * Check .go-version: "1.21.5" → use 1.21
+  * If using generics → requires 1.18+
+  * DEFAULT: 1.22 (latest stable)
 - Build tool: go
-- Install: \`yum install -y golang\` (or download specific version)
+- Install: Download specific Go version
 - Build: \`go build -o app .\` or \`go build -o bin/server cmd/main.go\`
 - Test: \`go test ./...\`
 - Lint: \`go vet ./...\`
@@ -267,14 +435,22 @@ You MUST identify:
   * If not found, default to "8080"
 - Project type: backend (usually)
 - Needs runtime: NO (compiled binary)
+- Go version: DETECTED_VERSION (e.g., "1.22")
 
 🐍 **PYTHON DETECTION:**
-- Files: requirements.txt, setup.py, pyproject.toml, app.py, main.py
+- Files: requirements.txt, setup.py, pyproject.toml, app.py, main.py, runtime.txt, .python-version
 - Framework detection:
   * "fastapi" in requirements → FastAPI
   * "flask" in requirements → Flask
   * "django" in requirements → Django
   * "uvicorn" in requirements → ASGI server for FastAPI
+- **VERSION DETECTION (CRITICAL!):**
+  * Check runtime.txt: "python-3.11" → use 3.11
+  * Check .python-version: "3.10.5" → use 3.10
+  * Check pyproject.toml: requires-python = ">=3.11" → use 3.11
+  * Scan code for modern type hints (str | None) → requires 3.10+
+  * If using match/case statements → requires 3.10+
+  * DEFAULT: 3.11 (modern apps), 3.9 (legacy apps)
 - Build tool: pip
 - Install: \`pip3 install -r requirements.txt\`
 - Build: NONE (interpreted)
@@ -291,33 +467,72 @@ You MUST identify:
   * \`if __name__ == "__main__": uvicorn.run("main:app", port=PORT)\`
 - Project type: backend
 - Needs runtime: YES (Python 3.9+)
-- Runtime install: \`yum install -y python3 python3-pip\`
+- Python version: DETECTED_VERSION (e.g., "3.11")
 
 📦 **NODE.JS DETECTION:**
-- Files: package.json, package-lock.json, yarn.lock, pnpm-lock.yaml
-- Framework detection:
-  * "next" → Next.js (fullstack SSR)
-  * "vite" → Vite + React (frontend SPA)
-  * "react-scripts" → Create React App (frontend)
-  * "express" → Express.js (backend)
-  * "@nestjs/core" → NestJS (backend)
+- Files: package.json, package-lock.json, yarn.lock, pnpm-lock.yaml, .nvmrc, .node-version
+- **CRITICAL: FRONTEND vs BACKEND DETECTION PRIORITY:**
+
+  **STEP 1: Check for FRONTEND indicators FIRST:**
+  * Check FILE LIST for: index.html, vite.config.ts, vite.config.js, App.tsx, App.jsx
+  * If "vite" in dependencies AND (index.html OR vite.config.* exists) → **Vite frontend (SPA)**
+  * If "react-scripts" in dependencies → **Create React App frontend**
+  * If "next" in dependencies → **Next.js fullstack**
+
+  **STEP 2: Only if NO frontend indicators, check for BACKEND:**
+  * If "express" in dependencies → **Express.js backend**
+  * If "@nestjs/core" in dependencies → **NestJS backend**
+  * If "fastify" in dependencies → **Fastify backend**
+
+  **DISAMBIGUATION RULE:**
+  * If BOTH "vite" AND "express" exist in dependencies:
+    → Check for index.html or vite.config.* in file list
+    → If found → **Frontend (Vite)** - Express is likely just a dev dependency
+    → If NOT found → **Backend (Express)** with Vite for tooling
+
+- Framework detection priority order:
+  1. "vite" + (index.html OR vite.config.*) → **Vite + React (frontend SPA)**
+  2. "next" in dependencies → **Next.js (fullstack SSR)**
+  3. "react-scripts" → **Create React App (frontend)**
+  4. "express" (only if no frontend markers) → **Express.js (backend)**
+  5. "@nestjs/core" → **NestJS (backend)**
+
+- **VERSION DETECTION (CRITICAL!):**
+  * Check .nvmrc: "20.10.0" → use 20
+  * Check .node-version: "18" → use 18
+  * Check package.json "engines": {"node": ">=20"} → use 20
+  * Check package.json "engines": {"node": "18.x"} → use 18
+  * If using ES modules (type: "module") → requires 14+
+  * DEFAULT: 20 (modern apps), 18 (stable LTS)
+
 - Build tool: npm, yarn, or pnpm
 - Install: \`npm install --force --include=dev\`
 - Build:
-  * Next.js: \`npm run build\` (outputs to .next/)
-  * Vite: \`npm run build\` (outputs to dist/)
-  * Express: \`npm run build\` (if TypeScript) or NONE
+  * **Vite (FRONTEND)**: \`npm run build\` (outputs to dist/)
+  * **Next.js (FULLSTACK)**: \`npm run build\` (outputs to .next/)
+  * **CRA (FRONTEND)**: \`npm run build\` (outputs to build/)
+  * **Express (BACKEND)**: \`npm run build\` (if TypeScript) or echo "No build needed"
 - Test: \`npm test\`
 - Lint: \`npm run lint\`
 - Start:
-  * Next.js: \`npm start\` (serves .next/)
-  * Vite: Serve dist/ with nginx or http-server
-  * Express: \`node index.js\` or \`npm start\`
-- Output: .next/ or dist/ or build/
-- Port: 3000 (Next.js), 80 (Vite static), 3000/8000 (Express)
-- Project type: fullstack (Next.js), frontend (Vite/CRA), backend (Express)
-- Needs runtime: YES (Node.js 18+)
-- Runtime install: Already installed in setup
+  * **Vite (FRONTEND)**: \`echo "Static files served by Nginx"\` - DO NOT use npm start!
+  * **Next.js (FULLSTACK)**: \`npm start\` (serves .next/)
+  * **Express (BACKEND)**: \`node index.js\` or \`npm start\`
+- Output:
+  * **Vite**: dist/ (static HTML/CSS/JS)
+  * **Next.js**: .next/ (SSR server)
+  * **CRA**: build/ (static files)
+  * **Express**: NONE (source runs directly)
+- Port:
+  * **Vite**: 80 (Nginx serves static files)
+  * **Next.js**: 3000
+  * **Express**: Scan source for app.listen(PORT) or default 3000
+- Project type:
+  * **Vite/CRA**: frontend (static SPA)
+  * **Next.js**: fullstack (SSR)
+  * **Express/Nest**: backend (API server)
+- Needs runtime: YES (Node.js 14+)
+- Node version: DETECTED_VERSION (e.g., "20")
 
 ☕ **JAVA DETECTION:**
 - Files: pom.xml (Maven) or build.gradle (Gradle)
@@ -388,6 +603,57 @@ If you cannot find a port in the source code, use these defaults:
 - Rust: "8000"
 
 ═══════════════════════════════════════════════════════════════════
+🔢 VERSION DETECTION (CRITICAL - MUST BE ACCURATE!)
+═══════════════════════════════════════════════════════════════════
+
+**YOU MUST DETECT EXACT VERSIONS FROM PROJECT FILES!**
+
+**PRIORITY ORDER FOR VERSION DETECTION:**
+
+**Python Version Detection (PRIORITY ORDER):**
+1. **FIRST:** Check .python-version file (if provided above): "3.10" → pythonVersion: "3.10"
+2. **SECOND:** Check runtime.txt file (if provided above): "python-3.11.5" → pythonVersion: "3.11"
+3. **THIRD:** Check pyproject.toml: requires-python = ">=3.11" → pythonVersion: "3.11"
+4. **FOURTH:** Scan code for syntax clues:
+   - Uses "str | None" type hints → REQUIRES 3.10+
+   - Uses "match/case" statements → REQUIRES 3.10+
+   - Uses f-strings with = → REQUIRES 3.8+
+5. **DEFAULT (last resort):** "3.11" for modern apps, "3.9" if legacy syntax detected
+
+**Node.js Version Detection (PRIORITY ORDER):**
+1. **FIRST:** Check .nvmrc file (if provided above): "20.10.0" → nodeVersion: "20"
+2. **SECOND:** Check .node-version file (if provided above): "18" → nodeVersion: "18"
+3. **THIRD:** Check package.json "engines": {"node": ">=20"} → nodeVersion: "20"
+4. **FOURTH:** Check package.json "engines": {"node": "18.x"} → nodeVersion: "18"
+5. **DEFAULT (last resort):** "20" for modern apps, "18" for stable LTS
+
+**Go Version Detection (PRIORITY ORDER):**
+1. **FIRST:** Check .go-version file (if provided above): "1.21.5" → goVersion: "1.21"
+2. **SECOND:** Check go.mod first line: "go 1.22" → goVersion: "1.22"
+3. **DEFAULT (last resort):** "1.22" (latest stable)
+
+**Java Version Detection (PRIORITY ORDER):**
+1. **FIRST:** Check pom.xml: <maven.compiler.source>17</maven.compiler.source> → javaVersion: "17"
+2. **SECOND:** Check build.gradle: sourceCompatibility = '11' → javaVersion: "11"
+3. **DEFAULT (last resort):** "17" (current LTS)
+
+**Ruby Version Detection (PRIORITY ORDER):**
+1. **FIRST:** Check .ruby-version file (if provided above): "3.2.0" → rubyVersion: "3.2"
+2. **SECOND:** Check Gemfile: ruby "3.1.2" → rubyVersion: "3.1"
+3. **DEFAULT (last resort):** "3.2" (latest stable)
+
+**PHP Version Detection (PRIORITY ORDER):**
+1. **FIRST:** Check composer.json: "require": {"php": "^8.2"} → phpVersion: "8.2"
+2. **DEFAULT (last resort):** "8.2" (latest stable)
+
+**IMPORTANT RULES:**
+- If a version file (.nvmrc, .python-version, etc.) is shown above in the "VERSION FILES" section, YOU MUST USE IT!
+- Version files take ABSOLUTE PRIORITY over manifest files (package.json, requirements.txt)
+- Extract just the major.minor version: "20.10.0" → "20", "3.11.5" → "3.11"
+- If runtime.txt says "python-3.11.5", extract "3.11"
+- Set version fields to null ONLY if absolutely no version information exists
+
+═══════════════════════════════════════════════════════════════════
 🎯 OUTPUT FORMAT (RETURN ONLY VALID JSON):
 ═══════════════════════════════════════════════════════════════════
 
@@ -408,6 +674,13 @@ If you cannot find a port in the source code, use these defaults:
   "port": "ACTUAL_PORT_NUMBER_FROM_SOURCE_CODE (e.g., '3030', '8000', '5000')",
   "needsRuntime": true|false,
   "runtimeVersion": "node 20|python 3.11|java 17|NONE",
+
+  "pythonVersion": "3.11|3.10|3.9|null (DETECT from runtime.txt/.python-version/code syntax)",
+  "nodeVersion": "20|18|16|null (DETECT from .nvmrc/.node-version/package.json engines)",
+  "goVersion": "1.22|1.21|1.20|null (DETECT from go.mod)",
+  "javaVersion": "17|11|8|null (DETECT from pom.xml/build.gradle)",
+  "rubyVersion": "3.2|3.1|null (DETECT from .ruby-version/Gemfile)",
+  "phpVersion": "8.2|8.1|null (DETECT from composer.json)",
 
   "hasTests": boolean,
   "hasLinter": boolean,
@@ -443,6 +716,44 @@ If you cannot find a port in the source code, use these defaults:
 6. Port detection: Look in source files for actual port configuration
 7. Start command must be EXECUTABLE (binary path or runtime command)
 8. For Solana projects, set isSolanaProject: true and add Solana-specific recommendations
+
+⚠️ **CRITICAL: NODE.JS FRONTEND vs BACKEND DETECTION:**
+
+**STEP 1: Check FILE LIST for frontend indicators:**
+- index.html exists? → **FRONTEND PROJECT** (classify as Vite, NOT Express!)
+- vite.config.ts exists? → **FRONTEND PROJECT** (classify as Vite, NOT Express!)
+- tailwind.config.js exists? → **FRONTEND PROJECT** (uses Tailwind CSS)
+- public/ folder exists? → **FRONTEND PROJECT** (static assets)
+
+**STEP 2: If ANY frontend indicator found:**
+- framework: "Vite" or "Vite + React" (NEVER "Express.js")
+- projectType: "frontend" (NEVER "backend")
+- startCommand: "echo \"Static files served by Nginx\"" (NEVER "npm start" or "node server.js")
+- outputDir: "dist" (NEVER "NONE")
+- port: "80" (Nginx serves static files on port 80)
+
+**STEP 3: Only classify as Express.js backend if:**
+- NO index.html file
+- NO vite.config.* file
+- NO public/ folder
+- Has Express in dependencies AND it's the main server (not dev server)
+
+**🚨 MOST COMMON MISTAKE:**
+\`\`\`
+❌ WRONG DETECTION:
+Files: index.html, vite.config.ts, server/index.js (Express)
+→ framework: "Express.js", projectType: "backend"  ← DON'T DO THIS!
+
+✅ CORRECT DETECTION:
+Files: index.html, vite.config.ts, server/index.js (Express)
+→ framework: "Vite + React", projectType: "frontend"  ← DO THIS!
+   (Express in server/ is just backend API, but project type is frontend!)
+\`\`\`
+
+**REMEMBER:**
+- **index.html = FRONTEND** (period, no exceptions!)
+- **vite.config.* = FRONTEND** (period, no exceptions!)
+- Even if Express exists in server/ folder, PROJECT TYPE is still **frontend** if index.html exists!
 
 Return ONLY valid JSON, no markdown, no explanations.`;
 }
@@ -528,6 +839,31 @@ function parseAnalysis(response: string, files: UniversalProjectFiles): Universa
     console.log('  - Install:', parsed.installCommand);
     console.log('  - Build:', parsed.buildCommand);
     console.log('  - Start:', parsed.startCommand);
+
+    // SAFETY CHECK: Override Express.js detection if frontend indicators present
+    const fileList = files.fileList || [];
+    const hasIndexHtml = fileList.some((f: string) => f.toLowerCase().includes('index.html'));
+    const hasViteConfig = fileList.some((f: string) => f.toLowerCase().includes('vite.config'));
+    const hasTailwindConfig = fileList.some((f: string) => f.toLowerCase().includes('tailwind.config'));
+
+    if ((hasIndexHtml || hasViteConfig) && (parsed.framework === 'Express.js' || parsed.projectType === 'backend')) {
+      console.warn('[UNIVERSAL-ANALYZER] ⚠️ CORRECTING MISDETECTION:');
+      console.warn('[UNIVERSAL-ANALYZER]   - AI detected:', parsed.framework, '/', parsed.projectType);
+      console.warn('[UNIVERSAL-ANALYZER]   - But index.html or vite.config exists → This is FRONTEND!');
+      console.warn('[UNIVERSAL-ANALYZER]   - Overriding to: Vite + React / frontend');
+
+      // Override to correct values
+      parsed.framework = 'Vite + React';
+      parsed.projectType = 'frontend';
+      parsed.buildCommand = parsed.buildCommand === 'echo "No build step needed"' ? 'npm run build' : parsed.buildCommand;
+      parsed.startCommand = 'echo "Static files served by Nginx"';
+      parsed.outputDir = 'dist';
+      parsed.port = '80';
+
+      // Add warning to recommendations
+      if (!parsed.warnings) parsed.warnings = [];
+      parsed.warnings.push('AI initially misdetected as Express.js backend - corrected to Vite frontend based on index.html/vite.config presence');
+    }
 
     return parsed as UniversalProjectAnalysis;
   } catch (error: any) {
@@ -710,22 +1046,43 @@ function getFallbackAnalysis(files: UniversalProjectFiles): UniversalProjectAnal
     let outputDir = 'NONE';
     let buildCommand = 'NONE';
 
+    // PRIORITY 1: Check for frontend frameworks FIRST
+    // Check file list for frontend indicators
+    const fileList = files.fileList || [];
+    const hasIndexHtml = fileList.some((f: string) => f.toLowerCase().includes('index.html'));
+    const hasViteConfig = fileList.some((f: string) =>
+      f.toLowerCase().includes('vite.config') && (f.endsWith('.ts') || f.endsWith('.js'))
+    );
+
     if (deps.next) {
       framework = 'Next.js';
       projectType = 'fullstack';
       buildCommand = 'npm run build';
       startCommand = 'npm start';
       outputDir = '.next';
-    } else if (deps.vite) {
+    } else if (deps.vite && (hasIndexHtml || hasViteConfig || !deps.express)) {
+      // Vite + (index.html OR vite.config OR no express) = FRONTEND
       framework = 'Vite + React';
       projectType = 'frontend';
       buildCommand = 'npm run build';
-      startCommand = 'STATIC_SERVER';
+      startCommand = 'echo "Static files served by Nginx"';
       outputDir = 'dist';
+    } else if (deps['react-scripts']) {
+      // Create React App
+      framework = 'Create React App';
+      projectType = 'frontend';
+      buildCommand = 'npm run build';
+      startCommand = 'echo "Static files served by Nginx"';
+      outputDir = 'build';
     } else if (deps.express) {
+      // ONLY classify as Express if no frontend indicators
       framework = 'Express.js';
       projectType = 'backend';
-      startCommand = 'node index.js';
+      startCommand = pkg.scripts?.start || 'node index.js';
+    } else if (deps['@nestjs/core']) {
+      framework = 'NestJS';
+      projectType = 'backend';
+      startCommand = 'npm start';
     }
 
     const detectedPort = detectPortWithFallback(undefined, 'Node.js/TypeScript', framework);
@@ -742,7 +1099,7 @@ function getFallbackAnalysis(files: UniversalProjectFiles): UniversalProjectAnal
       lintCommand: pkg.scripts?.lint ? 'npm run lint' : 'echo "No linter configured"',
       startCommand,
       outputDir,
-      port: detectedPort,
+      port: projectType === 'frontend' ? '80' : detectedPort,
       needsRuntime: true,
       runtimeVersion: 'node 20',
       hasTests: !!pkg.scripts?.test,
@@ -757,7 +1114,7 @@ function getFallbackAnalysis(files: UniversalProjectFiles): UniversalProjectAnal
       isSolanaProject: false,
       hasAnchor: false,
       buildOptimizations: [],
-      estimatedBuildTime: '2 minutes',
+      estimatedBuildTime: projectType === 'frontend' ? '1 minute' : '2 minutes',
       recommendations: ['Node.js 20 required'],
       warnings: [],
     };

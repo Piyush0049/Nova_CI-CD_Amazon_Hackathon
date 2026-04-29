@@ -3,22 +3,32 @@ import { getToken } from "next-auth/jwt";
 import type { NextRequest } from "next/server";
 
 export async function middleware(request: NextRequest) {
+    const { pathname } = request.nextUrl;
+
+    // Check for internal API requests from webhooks
+    const internalHeader = request.headers.get('X-Internal-Request');
+    const isInternalRequest = internalHeader === process.env.NEXTAUTH_SECRET;
+
+    // Allow internal requests to bypass authentication
+    if (isInternalRequest) {
+        return NextResponse.next();
+    }
+
     // Get the auth token from NextAuth
     const token = await getToken({
         req: request,
         secret: process.env.NEXTAUTH_SECRET,
     });
 
-    const { pathname } = request.nextUrl;
-
     // Paths that do not require authentication
     const isLandingPage = pathname === "/";
     const isAuthPage = pathname.startsWith("/login") || pathname.startsWith("/signup");
     const isApiAuthRoute = pathname.startsWith("/api/auth");
+    const isWebhookRoute = pathname.startsWith("/api/webhooks"); // GitHub webhooks
     const isPublicAsset = pathname.startsWith("/_next") || pathname.includes("favicon.ico");
 
-    // Allow public assets and NextAuth internal routes to pass through
-    if (isPublicAsset || isApiAuthRoute) {
+    // Allow public assets, webhooks, and NextAuth internal routes to pass through
+    if (isPublicAsset || isApiAuthRoute || isWebhookRoute) {
         return NextResponse.next();
     }
 

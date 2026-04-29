@@ -99,7 +99,7 @@ export function detectProjectDeploymentType(
       framework = cargo.includes('actix-web') ? 'Actix Web' : cargo.includes('rocket') ? 'Rocket' : 'Axum';
       type = 'BACKEND';
       buildOutputDir = '/home/ec2-user/app/target/release';
-      port = 8080;
+      port = customPort || 8080; // ✅ Use detected port first, fallback to 8080
       startCommand = './target/release/app';
       needsPM2 = false; // Rust binaries don't need PM2
     }
@@ -119,10 +119,13 @@ export function detectProjectDeploymentType(
       framework = reqs.includes('flask') ? 'Flask' : reqs.includes('django') ? 'Django' : 'FastAPI';
       type = 'BACKEND';
       buildOutputDir = '/home/ec2-user/app';
-      port = reqs.includes('django') ? 8000 : 5000;
+      // Use detected port first, then framework defaults
+      const defaultPort = reqs.includes('django') ? 8000 : reqs.includes('flask') ? 5000 : 8000;
+      port = customPort || defaultPort;
+      // Update start command with detected port
       startCommand = reqs.includes('flask') ? 'python app.py' :
-                     reqs.includes('django') ? 'python manage.py runserver 0.0.0.0:8000' :
-                     'uvicorn main:app --host 0.0.0.0 --port 8000';
+                     reqs.includes('django') ? `python manage.py runserver 0.0.0.0:${port}` :
+                     `uvicorn main:app --host 0.0.0.0 --port ${port}`;
       needsPM2 = true;
     }
   }
@@ -135,7 +138,7 @@ export function detectProjectDeploymentType(
       framework = mod.includes('gin-gonic') ? 'Gin' : mod.includes('fiber') ? 'Fiber' : 'Echo';
       type = 'BACKEND';
       buildOutputDir = '/home/ec2-user/app';
-      port = 8080;
+      port = customPort || 8080; // ✅ Use detected port first, fallback to 8080
       startCommand = './app';
       needsPM2 = false; // Go binaries don't need PM2
     }

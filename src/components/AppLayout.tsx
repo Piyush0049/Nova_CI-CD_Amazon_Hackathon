@@ -5,7 +5,7 @@ import { useSession, signOut } from 'next-auth/react';
 import { useRouter, usePathname } from 'next/navigation';
 import Image from 'next/image';
 import ThemeToggle from '@/components/ThemeToggle';
-import { Bot, LogOut, User, Settings, Github, Activity, Home, Server } from 'lucide-react';
+import { Bot, LogOut, User, Settings, Github, Activity, Home, Server, Zap } from 'lucide-react';
 
 interface AppLayoutProps {
   children: React.ReactNode;
@@ -116,6 +116,20 @@ export default function AppLayout({ children, pipelineCount = 0 }: AppLayoutProp
                 <Server className={`w-4 h-4 ${isActive('/deployments') ? 'animate-pulse' : ''}`} />
                 <span>Deployments</span>
                 {isActive('/deployments') && (
+                  <div className="absolute inset-0 bg-gradient-to-r from-cyan-500 to-blue-500 rounded-xl blur-xl opacity-30 -z-10" />
+                )}
+              </button>
+              <button
+                onClick={() => router.push('/webhooks')}
+                className={`px-5 py-2.5 text-sm font-semibold rounded-xl transition-all duration-300 flex items-center gap-2 relative ${
+                  isActive('/webhooks')
+                    ? 'bg-gradient-to-r from-cyan-500 to-blue-500 text-white shadow-lg shadow-cyan-500/40'
+                    : 'text-muted-foreground hover:text-foreground hover:bg-background/80'
+                }`}
+              >
+                <Zap className={`w-4 h-4 ${isActive('/webhooks') ? 'animate-pulse' : ''}`} />
+                <span>Webhooks</span>
+                {isActive('/webhooks') && (
                   <div className="absolute inset-0 bg-gradient-to-r from-cyan-500 to-blue-500 rounded-xl blur-xl opacity-30 -z-10" />
                 )}
               </button>

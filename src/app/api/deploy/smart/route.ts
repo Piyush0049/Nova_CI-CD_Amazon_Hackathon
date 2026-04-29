@@ -27,6 +27,7 @@ import {
 } from '@/models/DeploymentLock';
 import { deployWithNginx } from '@/lib/nginx/deployment';
 import { launchRuntime, RuntimeConfig } from '@/lib/runtime-launcher';
+import { installRuntimeViaSSM } from '@/lib/ssm-runtime-installer';
 
 const ec2Client = new EC2Client({
   region: process.env.AWS_REGION || 'us-east-1',
@@ -50,14 +51,36 @@ const ssmClient = new SSMClient({
 export async function POST(request: NextRequest) {
   try {
     const session = await getServerSession();
-    const { repoUrl, repoFullName, githubToken, pipelineName, envVars = {}, trackingId } =
-      await request.json();
+    const {
+      repoUrl,
+      repoFullName,
+      githubToken,
+      pipelineName,
+      envVars = {},
+      trackingId,
+      triggeredBy,
+      commit,
+      pipelineId,
+      reuseInstance = false, // Flag to reuse existing instance
+    } = await request.json();
 
     if (!repoUrl || !repoFullName) {
       return NextResponse.json(
         { error: 'GitHub repository URL is required' },
         { status: 400 }
       );
+    }
+
+    // Log webhook trigger info if present
+    if (triggeredBy === 'webhook' && commit) {
+      console.log('[SMART-DEPLOY] ════════════════════════════════════════════════════════════');
+      console.log('[SMART-DEPLOY] 🔄 CONTINUOUS DEPLOYMENT TRIGGERED');
+      console.log('[SMART-DEPLOY] ════════════════════════════════════════════════════════════');
+      console.log('[SMART-DEPLOY] Triggered by: GitHub Webhook');
+      console.log('[SMART-DEPLOY] Commit:', commit.sha?.substring(0, 7));
+      console.log('[SMART-DEPLOY] Message:', commit.message?.split('\n')[0]);
+      console.log('[SMART-DEPLOY] Author:', commit.author);
+      console.log('[SMART-DEPLOY] ════════════════════════════════════════════════════════════');
     }
 
     // Connect to database first
@@ -94,10 +117,19 @@ export async function POST(request: NextRequest) {
 
     // Step 1: Fetch saved pipeline from database (NO analysis needed)
     console.log('[SMART-DEPLOY] 📋 Fetching saved pipeline from database...');
-    const savedPipeline = await Pipeline.findOne({
-      repoFullName,
-      status: 'active',
-    }).sort({ createdAt: -1 });
+
+    // If pipelineId is provided (from webhook), use it directly
+    let savedPipeline;
+    if (pipelineId) {
+      console.log('[SMART-DEPLOY] Using pipeline ID from webhook:', pipelineId);
+      savedPipeline = await Pipeline.findById(pipelineId);
+    } else {
+      // Otherwise, find latest pipeline for repository
+      savedPipeline = await Pipeline.findOne({
+        repoFullName,
+        status: 'active',
+      }).sort({ createdAt: -1 });
+    }
 
     if (!savedPipeline) {
       console.error('[SMART-DEPLOY] ❌ No pipeline found for repository:', repoFullName);
@@ -116,6 +148,84 @@ export async function POST(request: NextRequest) {
     console.log('[SMART-DEPLOY] Pipeline stages:', savedPipeline.stages?.join(' → '));
     console.log('[SMART-DEPLOY] Saved Port:', savedPipeline.port || 'NOT SET');
     console.log('[SMART-DEPLOY] Saved Start Command:', savedPipeline.startCommand || 'NOT SET');
+
+    // ═══════════════════════════════════════════════════════════════════════════════
+    // 🔄 INSTANCE REUSE LOGIC (for webhooks)
+    // ═══════════════════════════════════════════════════════════════════════════════
+    console.log('[SMART-DEPLOY] Reuse instance flag:', reuseInstance);
+    let existingInstance = null;
+    if (reuseInstance && savedPipeline._id) {
+      console.log('[SMART-DEPLOY] ════════════════════════════════════════════════════════════');
+      console.log('[SMART-DEPLOY] 🔄 CHECKING FOR EXISTING INSTANCE TO REUSE');
+      console.log('[SMART-DEPLOY] ════════════════════════════════════════════════════════════');
+      console.log('[SMART-DEPLOY] Looking for pipeline:', savedPipeline._id.toString());
+
+      // Debug: Show ALL deployments in database
+      const allDeployments = await Deployment.find({}).sort({ createdAt: -1 }).limit(5).lean();
+      console.log('[SMART-DEPLOY] 📊 Recent deployments in database:', allDeployments.length);
+      allDeployments.forEach((d: any, i: number) => {
+        console.log(`[SMART-DEPLOY]   ${i + 1}. Pipeline: ${d.pipelineId} | Instance: ${d.instanceId} | Status: ${d.status}`);
+      });
+
+      // Find the most recent deployment with an instance (ANY status)
+      // We'll check if the instance is running, so status doesn't matter
+      const previousDeployment = await Deployment.findOne({
+        pipelineId: savedPipeline._id.toString(),
+        instanceId: { $exists: true, $ne: null },
+      }).sort({ createdAt: -1 });
+
+      console.log('[SMART-DEPLOY] Query: { pipelineId:', savedPipeline._id.toString(), ', instanceId: exists }');
+      console.log('[SMART-DEPLOY] Found previous deployment:', previousDeployment ? 'YES' : 'NO');
+
+      if (previousDeployment && previousDeployment.instanceId) {
+        console.log('[SMART-DEPLOY] ✅ Found previous deployment');
+        console.log('[SMART-DEPLOY]   Instance ID:', previousDeployment.instanceId);
+        console.log('[SMART-DEPLOY]   Public IP:', previousDeployment.publicIp);
+        console.log('[SMART-DEPLOY]   Status:', previousDeployment.status);
+        console.log('[SMART-DEPLOY]   Deployed:', new Date(previousDeployment.createdAt).toLocaleString());
+
+        // Check if instance is still running
+        try {
+          const describeCommand = new DescribeInstancesCommand({
+            InstanceIds: [previousDeployment.instanceId],
+          });
+          const instanceData = await ec2Client.send(describeCommand);
+
+          const instance = instanceData.Reservations?.[0]?.Instances?.[0];
+          const instanceState = instance?.State?.Name;
+
+          console.log('[SMART-DEPLOY]   Current state:', instanceState);
+
+          if (instanceState === 'running') {
+            console.log('[SMART-DEPLOY] ✅ Instance is running - will reuse!');
+            console.log('[SMART-DEPLOY] ════════════════════════════════════════════════════════════');
+            existingInstance = {
+              instanceId: previousDeployment.instanceId,
+              publicIp: previousDeployment.publicIp || instance.PublicIpAddress,
+            };
+          } else {
+            console.log(`[SMART-DEPLOY] ⚠️  Instance is ${instanceState} - creating new instance`);
+            console.log('[SMART-DEPLOY] ════════════════════════════════════════════════════════════');
+          }
+        } catch (error: any) {
+          console.error('[SMART-DEPLOY] ❌ Error checking instance:', error.message);
+          console.log('[SMART-DEPLOY] Will create new instance');
+          console.log('[SMART-DEPLOY] ════════════════════════════════════════════════════════════');
+        }
+      } else {
+        console.log('[SMART-DEPLOY] ℹ️  No previous deployment with instance found');
+        console.log('[SMART-DEPLOY] This is either:');
+        console.log('[SMART-DEPLOY]   - First deployment for this pipeline');
+        console.log('[SMART-DEPLOY]   - Previous instance was terminated');
+        console.log('[SMART-DEPLOY] Will create NEW instance');
+        console.log('[SMART-DEPLOY] ════════════════════════════════════════════════════════════');
+      }
+    } else {
+      if (!reuseInstance) {
+        console.log('[SMART-DEPLOY] ℹ️  Instance reuse disabled (reuseInstance=false)');
+        console.log('[SMART-DEPLOY] Creating new instance');
+      }
+    }
 
     // ✨ SMART VALIDATION: Detect language/command mismatches and trigger re-analysis
     // This ensures we always use the correct port and command, even if saved data is wrong
@@ -199,7 +309,7 @@ export async function POST(request: NextRequest) {
 
     // Parse the YAML to extract pipeline structure
     const pipelineYaml = savedPipeline.yaml || savedPipeline.content || '';
-    const pipeline: GeneratedPipeline = {
+    let pipeline: GeneratedPipeline = {
       stages: savedPipeline.stages || [],
       jobs: parsePipelineJobs(pipelineYaml),
     };
@@ -215,6 +325,16 @@ export async function POST(request: NextRequest) {
     };
 
     console.log('[SMART-DEPLOY] Pipeline jobs:', pipeline.jobs.length);
+
+    // DETECT REQUIRED RUNTIME FROM PIPELINE
+    const detectedRuntime = detectRuntimeFromPipeline(pipeline, savedPipeline);
+    console.log('[SMART-DEPLOY] ════════════════════════════════════════════════════════════');
+    console.log('[SMART-DEPLOY] 🔍 PIPELINE ANALYSIS');
+    console.log('[SMART-DEPLOY] ════════════════════════════════════════════════════════════');
+    console.log('[SMART-DEPLOY] Detected Language:', savedPipeline.language || 'Unknown');
+    console.log('[SMART-DEPLOY] Detected Framework:', savedPipeline.framework || 'Unknown');
+    console.log('[SMART-DEPLOY] Required Runtime:', detectedRuntime.toUpperCase());
+    console.log('[SMART-DEPLOY] ════════════════════════════════════════════════════════════');
 
     // Check if this is a backend and warn about environment variables
     if (projectType.framework.includes('Express') || projectType.framework.includes('Node.js') || projectType.framework.includes('Python') || projectType.framework.includes('FastAPI')) {
@@ -240,16 +360,43 @@ export async function POST(request: NextRequest) {
       ? repoUrl.replace('https://github.com/', `https://${githubToken}@github.com/`)
       : repoUrl;
 
+    // ⚠️  WARNING CHECK: No GitHub token provided
+    if (!githubToken) {
+      console.log('[SMART-DEPLOY] ⚠️  ⚠️  ⚠️  WARNING ⚠️  ⚠️  ⚠️');
+      console.log('[SMART-DEPLOY] No GitHub token provided!');
+      console.log('[SMART-DEPLOY] If this is a PRIVATE repository, git clone will FAIL');
+      console.log('[SMART-DEPLOY] Provide a GitHub Personal Access Token when creating the webhook');
+      console.log('[SMART-DEPLOY] ⚠️  ⚠️  ⚠️  ⚠️  ⚠️  ⚠️  ⚠️  ⚠️  ⚠️');
+    } else {
+      console.log('[SMART-DEPLOY] ✅ GitHub token provided (can clone private repos)');
+    }
+
     await dbConnect();
 
-    // Step 2: Create EC2 instance with basic setup only
-    console.log('[SMART-DEPLOY] Creating EC2 instance...');
+    // Step 2: Create EC2 instance OR reuse existing one
+    let instanceId: string;
+    let publicIp: string;
 
-    // ARCHITECTURE: Application exposed directly on detected port (no Nginx reverse proxy)
-    // Access URL: http://PUBLIC_IP:PORT (e.g., http://23.45.67.89:3000)
-    // Security group is automatically configured to allow inbound traffic on the detected port
+    if (existingInstance) {
+      // ═══════════════════════════════════════════════════════════════════════════════
+      // REUSING EXISTING INSTANCE
+      // ═══════════════════════════════════════════════════════════════════════════════
+      console.log('[SMART-DEPLOY] ♻️  Reusing existing instance (no new EC2 creation)');
+      instanceId = existingInstance.instanceId;
+      publicIp = existingInstance.publicIp;
+      console.log('[SMART-DEPLOY] Instance ID:', instanceId);
+      console.log('[SMART-DEPLOY] Public IP:', publicIp);
+    } else {
+      // ═══════════════════════════════════════════════════════════════════════════════
+      // CREATING NEW INSTANCE
+      // ═══════════════════════════════════════════════════════════════════════════════
+      console.log('[SMART-DEPLOY] Creating NEW EC2 instance...');
 
-    const runInstancesCommand = new RunInstancesCommand({
+      // ARCHITECTURE: Application exposed directly on detected port (no Nginx reverse proxy)
+      // Access URL: http://PUBLIC_IP:PORT (e.g., http://23.45.67.89:3000)
+      // Security group is automatically configured to allow inbound traffic on the detected port
+
+      const runInstancesCommand = new RunInstancesCommand({
       ImageId: process.env.AWS_AMI_ID || 'ami-0440d3b780d96b29d',
       InstanceType: (process.env.AWS_INSTANCE_TYPE || 't3.small') as any,
       MinCount: 1,
@@ -273,63 +420,108 @@ export async function POST(request: NextRequest) {
         exec > >(tee /var/log/user-data.log)
         exec 2>&1
 
-        echo "[SETUP] Installing system dependencies..."
-        # Install Node.js 20.x (required for modern frameworks)
-        echo "[SETUP] Installing Node.js 20 LTS..."
-        curl -fsSL https://rpm.nodesource.com/setup_20.x | bash -
-        yum install -y nodejs git docker gcc gcc-c++ make
+        echo "═══════════════════════════════════════════════════════════════════"
+        echo "🚀 NerveFlow CI/CD - Pipeline-Driven Deployment"
+        echo "═══════════════════════════════════════════════════════════════════"
+        echo "Runtime: ${detectedRuntime.toUpperCase()}"
+        echo "Language: ${savedPipeline.language || 'Detected from pipeline'}"
+        echo "Framework: ${savedPipeline.framework || 'Detected from pipeline'}"
+        echo "═══════════════════════════════════════════════════════════════════"
+        echo ""
 
-        # Verify Node.js version
-        NODE_VERSION=$(node -v)
-        echo "[SETUP] Installed Node.js version: $NODE_VERSION"
+        # System update (skip conflicts)
+        echo "[SETUP] Updating system..."
+        yum update -y --skip-broken --quiet 2>&1 | tail -5 || echo "[SETUP] Update had warnings (non-critical)"
+        echo "[SETUP] ✅ System updated"
 
-        echo "[SETUP] Starting parallel installs for Python, Go, Rust, Java..."
-        
-        # Install Python 3 in background
-        (yum install -y python3 python3-pip python3-devel 2>/dev/null || true) &
-        PID_PYTHON=$!
+        # Install minimal build tools (CRITICAL - must succeed)
+        echo "[SETUP] Installing build essentials..."
+        echo "[SETUP] This may take 1-2 minutes..."
 
-        # Install Go in background
-        (if ! command -v go &> /dev/null; then
-          curl -fsSL https://go.dev/dl/go1.22.2.linux-amd64.tar.gz -o /tmp/go.tar.gz
-          rm -rf /usr/local/go && tar -C /usr/local -xzf /tmp/go.tar.gz
-          echo 'export PATH=$PATH:/usr/local/go/bin' >> /etc/profile.d/go.sh
-          rm /tmp/go.tar.gz
-        fi) &
-        PID_GO=$!
+        # Try multiple package installation methods
+        yum install -y gcc gcc-c++ make wget git pkg-config openssl-devel 2>&1 | tee /tmp/yum-install.log | tail -10
 
-        # Install Rust in background
-        (if ! command -v rustc &> /dev/null; then
-          su - ec2-user -c 'curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y' || true
-        fi) &
-        PID_RUST=$!
+        # Verify critical tools are installed
+        if ! command -v gcc >/dev/null 2>&1; then
+          echo "[SETUP] ❌ CRITICAL: gcc not installed"
+          echo "[SETUP] Trying alternative package names..."
+          yum install -y gcc-c++ --allowerasing 2>&1 | tail -5
+        fi
 
-        # Install Java in background
-        (yum install -y java-17-amazon-corretto-devel maven 2>/dev/null || true) &
-        PID_JAVA=$!
+        if ! command -v make >/dev/null 2>&1; then
+          echo "[SETUP] ❌ CRITICAL: make not installed"
+          yum install -y make --allowerasing 2>&1 | tail -5
+        fi
 
-        # Wait for all background installations to complete
-        wait $PID_PYTHON
-        wait $PID_GO
-        wait $PID_RUST
-        wait $PID_JAVA
-        echo "[SETUP] ✅ All parallel installations finished."
+        # Final verification
+        if command -v gcc >/dev/null 2>&1 && command -v make >/dev/null 2>&1; then
+          echo "[SETUP] ✅ Build tools installed:"
+          echo "[SETUP]   - gcc: $(gcc --version | head -1)"
+          echo "[SETUP]   - make: $(make --version | head -1)"
+        else
+          echo "[SETUP] ❌ CRITICAL: Build tools installation FAILED"
+          echo "[SETUP] Cannot proceed without gcc and make"
+        fi
 
-        # Start Docker
-        systemctl start docker
-        systemctl enable docker
-        usermod -aG docker ec2-user
+        # Configure Git
+        if command -v git >/dev/null 2>&1; then
+          git config --global user.name "NerveFlow CI/CD"
+          git config --global user.email "ci@nerveflow.com"
+          git config --global init.defaultBranch main
+          echo "[SETUP] ✅ Git configured"
+        else
+          echo "[SETUP] ❌ Git not found"
+        fi
 
+        # Clone repository
+        echo ""
+        echo "[SETUP] ═══════════════════════════════════════════════════════════"
         echo "[SETUP] Cloning repository..."
+        echo "[SETUP] Repository: ${repoFullName}"
+        echo "[SETUP] Using authentication: ${githubToken ? 'Yes (token provided)' : 'No (public repo)'}"
         cd /home/ec2-user
         rm -rf app
-        echo "[SETUP] Fetching latest code from GitHub (no cache)..."
-        git clone --depth 1 ${authenticatedRepoUrl} app 2>&1 | tail -10 || git clone ${authenticatedRepoUrl} app
+
+        # Clone with detailed error output
+        echo "[SETUP] Running: git clone --depth 1 [REPO_URL] app"
+        CLONE_OUTPUT=$(git clone --depth 1 ${authenticatedRepoUrl} app 2>&1)
+        CLONE_EXIT_CODE=$?
+
+        echo "[SETUP] Git clone output:"
+        echo "$CLONE_OUTPUT"
+
+        if [ $CLONE_EXIT_CODE -eq 0 ]; then
+          echo "[SETUP] ✅ Repository cloned successfully"
+        else
+          echo "[SETUP] ════════════════════════════════════════════════════════════"
+          echo "[SETUP] ❌ ❌ ❌ GIT CLONE FAILED ❌ ❌ ❌"
+          echo "[SETUP] ════════════════════════════════════════════════════════════"
+          echo "[SETUP] Exit code: $CLONE_EXIT_CODE"
+          echo "[SETUP] Error output:"
+          echo "$CLONE_OUTPUT"
+          echo "[SETUP] ════════════════════════════════════════════════════════════"
+
+          if echo "$CLONE_OUTPUT" | grep -qi "could not read Username\|Authentication failed\|fatal: Authentication"; then
+            echo "[SETUP] ⚠️  DIAGNOSIS: This appears to be a PRIVATE repository"
+            echo "[SETUP] ⚠️  Private repos require a GitHub Personal Access Token"
+            echo "[SETUP] ⚠️  Please provide a token when creating the webhook"
+          elif echo "$CLONE_OUTPUT" | grep -qi "Repository not found\|fatal: repository.*not found"; then
+            echo "[SETUP] ⚠️  DIAGNOSIS: Repository not found (${repoFullName})"
+            echo "[SETUP] ⚠️  Check if the repository exists and is spelled correctly"
+          elif echo "$CLONE_OUTPUT" | grep -qi "fatal: unable to access"; then
+            echo "[SETUP] ⚠️  DIAGNOSIS: Network/connectivity issue"
+            echo "[SETUP] ⚠️  Check if GitHub is accessible from this EC2 instance"
+          fi
+
+          echo "[SETUP] ════════════════════════════════════════════════════════════"
+          echo "SETUP_FAILED"
+          exit 1
+        fi
+
         cd /home/ec2-user/app
-        echo "[SETUP] Current commit and branch:"
-        git log -1 --oneline
-        git branch -a
-        echo "[SETUP] Repository cloned successfully with latest code"
+        echo "[SETUP] Current directory: $(pwd)"
+        echo "[SETUP] Repository contents:"
+        ls -la | head -15
 
         ${
           Object.keys(envVars).length > 0
@@ -338,59 +530,152 @@ ${Object.entries(envVars)
   .map(([key, value]) => `${key}=${value}`)
   .join('\n')}
 ENVEOF
-chmod 600 .env`
-            : ''
-        }
+chmod 600 .env
+echo "[SETUP] ✅ Environment variables configured (${Object.keys(envVars).length} vars)"`
+            : 'echo "[SETUP] ℹ️  No environment variables"'
+        }        chown -R ec2-user:ec2-user /home/ec2-user/app
 
-        chown -R ec2-user:ec2-user /home/ec2-user/app
-        echo "[SETUP] Setup complete - ready for deployment stages"
+        # Mark UserData setup as complete
+        echo ""
+        echo "[SETUP] ═══════════════════════════════════════════════════════════"
+        echo "[SETUP] UserData setup complete"
+        echo "[SETUP] Runtime will be installed via SSM after instance is ready"
+        echo "[SETUP] ═══════════════════════════════════════════════════════════"
+
+        # Optional: Docker for containerized projects
+        if [ -f "/home/ec2-user/app/Dockerfile" ]; then
+          echo ""
+          echo "[SETUP] 🐳 Dockerfile detected - Installing Docker..."
+          yum install -y docker 2>&1 | tail -5 || true
+          systemctl enable docker 2>&1 || true
+          systemctl start docker 2>&1 || true
+          usermod -aG docker ec2-user 2>&1 || true
+          echo "[SETUP] ✅ Docker installed"
+        fi
+
+        # Verify setup before marking complete
+        echo ""
+        echo "[SETUP] ═══════════════════════════════════════════════════════════"
+        echo "[SETUP] FINAL VERIFICATION"
+        echo "[SETUP] ═══════════════════════════════════════════════════════════"
+
+        # Check critical components
+        SETUP_OK=true
+
+        if [ ! -d "/home/ec2-user/app" ]; then
+          echo "[SETUP] ❌ Repository directory not found"
+          SETUP_OK=false
+        fi
+
+        if ! command -v gcc >/dev/null 2>&1; then
+          echo "[SETUP] ❌ gcc not available"
+          SETUP_OK=false
+        fi
+
+        if ! command -v git >/dev/null 2>&1; then
+          echo "[SETUP] ❌ git not available"
+          SETUP_OK=false
+        fi
+
+                # NOTE: Runtime installation moved to SSM (to avoid UserData size limit)
+        # Runtime will be installed after this UserData completes
+        echo "[SETUP] ℹ️  Runtime (${detectedRuntime}) will be installed via SSM after setup"
+
+        if [ "$SETUP_OK" = true ]; then
+          echo "[SETUP] ✅ All verification checks passed"
+          echo ""
+          echo "[SETUP] ═══════════════════════════════════════════════════════════"
+          echo "[SETUP] ✅ ✅ ✅ SETUP_COMPLETE_READY_FOR_DEPLOYMENT ✅ ✅ ✅"
+          echo "[SETUP] ═══════════════════════════════════════════════════════════"
+          echo "[SETUP] Runtime: ${detectedRuntime.toUpperCase()}"
+          echo "[SETUP] Repository: /home/ec2-user/app"
+          echo "[SETUP] Log: /var/log/user-data.log"
+          echo "[SETUP] ═══════════════════════════════════════════════════════════"
+          echo ""
+          echo "✅ Ready for pipeline execution"
+        else
+          echo ""
+          echo "[SETUP] ═══════════════════════════════════════════════════════════"
+          echo "[SETUP] ❌ ❌ ❌ SETUP_FAILED ❌ ❌ ❌"
+          echo "[SETUP] ═══════════════════════════════════════════════════════════"
+          echo "[SETUP] Some critical components failed to install"
+          echo "[SETUP] Check /var/log/user-data.log for details"
+          echo "[SETUP] ═══════════════════════════════════════════════════════════"
+          exit 1
+        fi
       `).toString('base64'),
     });
 
-    const runResponse = await ec2Client.send(runInstancesCommand);
-    const instanceId = runResponse.Instances?.[0]?.InstanceId;
+      const runResponse = await ec2Client.send(runInstancesCommand);
+      const newInstanceId = runResponse.Instances?.[0]?.InstanceId;
 
-    if (!instanceId) {
-      throw new Error('Failed to create EC2 instance');
+      if (!newInstanceId) {
+        throw new Error('Failed to create EC2 instance');
+      }
+
+      instanceId = newInstanceId;
+      console.log('[SMART-DEPLOY] Instance created:', instanceId);
+    } // End of else block (new instance creation)
+
+    // Create deployment record (for both manual AND webhook deployments)
+    let deploymentRecord = null;
+
+    // Determine userId - use session if available, otherwise use pipeline owner (for webhooks)
+    let userId = session?.user?.email || session?.user?.id;
+    if (!userId && savedPipeline.userId) {
+      // Webhook deployment - use pipeline owner
+      userId = savedPipeline.userId;
+      console.log('[SMART-DEPLOY] Webhook deployment - using pipeline owner:', userId);
     }
 
-    console.log('[SMART-DEPLOY] Instance created:', instanceId);
+    if (!userId) {
+      console.warn('[SMART-DEPLOY] ⚠️  No userId available - deployment won\'t be saved to database');
+      userId = 'unknown';
+    }
 
-    // Create deployment record
-    let deploymentRecord = null;
-    if (session) {
-      try {
-        const initialLogs = [
-          '[SMART-DEPLOY] 🚀 Deployment started',
-          `[SMART-DEPLOY] Repository: ${repoFullName}`,
-          `[SMART-DEPLOY] Instance: ${instanceId}`,
-          `[SMART-DEPLOY] Region: ${process.env.AWS_REGION || 'us-east-1'}`,
-          `[SMART-DEPLOY] Framework: ${savedPipeline.framework || 'Auto-detected'}`,
-          `[SMART-DEPLOY] Port: ${savedPipeline.port || '3000'}`,
-          `[SMART-DEPLOY] Pipeline stages: ${pipeline.stages.join(' → ')}`,
-          '[SMART-DEPLOY] Waiting for instance to be ready...',
-        ].join('\n');
+    try {
+      const initialLogs = [
+        existingInstance ? '[SMART-DEPLOY] ♻️  REDEPLOYMENT started (reusing instance)' : '[SMART-DEPLOY] 🚀 NEW DEPLOYMENT started',
+        `[SMART-DEPLOY] Triggered by: ${triggeredBy || 'manual'}`,
+        `[SMART-DEPLOY] Repository: ${repoFullName}`,
+        `[SMART-DEPLOY] Instance: ${instanceId}`,
+        existingInstance ? `[SMART-DEPLOY] ✅ Reusing instance (keeping IP: ${existingInstance.publicIp})` : '[SMART-DEPLOY] Creating new instance',
+        existingInstance ? '[SMART-DEPLOY] ✅ Will pull latest code and redeploy' : '[SMART-DEPLOY] Will clone repository and deploy',
+        `[SMART-DEPLOY] Region: ${process.env.AWS_REGION || 'us-east-1'}`,
+        `[SMART-DEPLOY] Framework: ${savedPipeline.framework || 'Auto-detected'}`,
+        `[SMART-DEPLOY] Port: ${savedPipeline.port || '3000'}`,
+        `[SMART-DEPLOY] Pipeline stages: ${pipeline.stages.join(' → ')}`,
+        '[SMART-DEPLOY] Preparing for deployment...',
+      ].join('\n');
 
-        deploymentRecord = await Deployment.create({
-          userId: session.user?.email || session.user?.id || 'unknown',
-          pipelineId: 'smart-deploy',
-          pipelineName: pipelineName || repoFullName,
-          repoFullName,
-          instanceId,
-          publicIp: '',
-          instanceType: process.env.AWS_INSTANCE_TYPE || 't3.small',
-          region: process.env.AWS_REGION || 'us-east-1',
-          status: 'deploying',
-          envVarsCount: Object.keys(envVars).length,
-          trackingId, // For real-time log streaming before deployment completes
-          port: parseInt(savedPipeline.port || '3000', 10), // AI-detected port
-          framework: savedPipeline.framework,
-          rawLogs: initialLogs, // Add initial logs immediately
-        });
-        console.log('[SMART-DEPLOY] 📝 Deployment record created with tracking ID:', trackingId);
-      } catch (dbError) {
-        console.error('[SMART-DEPLOY] DB error:', dbError);
-      }
+      deploymentRecord = await Deployment.create({
+        userId: userId,
+        pipelineId: savedPipeline._id.toString(), // CRITICAL: Use savedPipeline._id for instance reuse to work!
+        pipelineName: savedPipeline.name || repoFullName,
+        repoFullName,
+        instanceId,
+        publicIp: existingInstance?.publicIp || '', // Use existing IP if reusing instance
+        instanceType: process.env.AWS_INSTANCE_TYPE || 't3.small',
+        region: process.env.AWS_REGION || 'us-east-1',
+        status: 'deploying',
+        envVarsCount: Object.keys(envVars).length,
+        trackingId, // For real-time log streaming before deployment completes
+        port: parseInt(savedPipeline.port || '3000', 10), // AI-detected port
+        framework: savedPipeline.framework,
+        rawLogs: initialLogs, // Add initial logs immediately
+        triggeredBy: triggeredBy || 'manual',
+        commitSha: commit?.sha,
+        commitMessage: commit?.message,
+        commitAuthor: commit?.author,
+      });
+      console.log('[SMART-DEPLOY] ✅ Deployment record created');
+      console.log('[SMART-DEPLOY]   - Deployment ID:', deploymentRecord._id);
+      console.log('[SMART-DEPLOY]   - Pipeline ID:', savedPipeline._id.toString());
+      console.log('[SMART-DEPLOY]   - Instance ID:', instanceId);
+      console.log('[SMART-DEPLOY]   - Tracking ID:', trackingId);
+    } catch (dbError) {
+      console.error('[SMART-DEPLOY] ❌ Failed to create deployment record:', dbError);
+      console.error('[SMART-DEPLOY] Deployment will continue but won\'t appear in UI');
     }
 
     // Acquire deployment lock
@@ -413,19 +698,24 @@ chmod 600 .env`
 
     console.log('[SMART-DEPLOY] 🔒 Deployment lock acquired');
 
-    // Wait for instance to be running
-    await waitForInstanceRunning(instanceId);
+    // Wait for instance to be running (only for NEW instances)
+    if (!existingInstance) {
+      await waitForInstanceRunning(instanceId);
 
-    // Get public IP
-    const describeCommand = new DescribeInstancesCommand({
-      InstanceIds: [instanceId],
-    });
-    const instanceDetails = await ec2Client.send(describeCommand);
-    const publicIp =
-      instanceDetails.Reservations?.[0]?.Instances?.[0]?.PublicIpAddress;
+      // Get public IP for new instance
+      const describeCommand = new DescribeInstancesCommand({
+        InstanceIds: [instanceId],
+      });
+      const instanceDetails = await ec2Client.send(describeCommand);
+      publicIp =
+        instanceDetails.Reservations?.[0]?.Instances?.[0]?.PublicIpAddress || '';
 
-    if (!publicIp) {
-      throw new Error('Failed to get public IP');
+      if (!publicIp) {
+        throw new Error('Failed to get public IP');
+      }
+    } else {
+      // For reused instances, publicIp is already set
+      console.log('[SMART-DEPLOY] Skipping instance startup wait (already running)');
     }
 
     console.log('[SMART-DEPLOY] Instance running at:', publicIp);
@@ -471,30 +761,294 @@ chmod 600 .env`
       }
     }
 
-    // Wait for setup to complete with progress updates (so it doesn't look stuck)
-    console.log('[SMART-DEPLOY] Starting 60s setup countdown...');
-    for (let i = 1; i <= 12; i++) {
-      const progress = Math.round((i / 12) * 100);
-      const bar = "█".repeat(i) + "░".repeat(12 - i);
-      const spinner = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'][i % 10];
+    // Wait for UserData to complete setup (git, python, node, repo clone)
+    // Skip this for reused instances (already set up)
+    let setupComplete = false;
+
+    if (existingInstance) {
+      console.log('[SMART-DEPLOY] ♻️  Skipping UserData wait (reusing existing instance)');
+      console.log('[SMART-DEPLOY] Instance already has runtimes installed');
+      setupComplete = true; // Mark as complete to skip the wait loop
+    } else {
+      console.log('[SMART-DEPLOY] Waiting for UserData setup to complete...');
+      console.log('[SMART-DEPLOY] This includes: installing runtimes + cloning repository');
+    }
+
+    if (!setupComplete) { // Only wait if NOT reusing instance
+    for (let i = 0; i < 60; i++) {
+      // 60 attempts × 3 seconds = 3 minutes
+      await new Promise((resolve) => setTimeout(resolve, 3000));
+
+      const checkCommand = new SendCommandCommand({
+        InstanceIds: [instanceId],
+        DocumentName: 'AWS-RunShellScript',
+        Parameters: {
+          commands: [
+            'echo "=== Checking UserData status ==="',
+            'if grep -q "SETUP_COMPLETE_READY_FOR_DEPLOYMENT" /var/log/user-data.log 2>/dev/null; then',
+            '  echo "✅ SETUP_COMPLETE"',
+            '  echo "Repository contents:"',
+            '  ls -la /home/ec2-user/app | head -10',
+            '  exit 0',
+            'else',
+            '  echo "⏳ Setup still running..."',
+            '  echo "Last 10 lines of UserData log:"',
+            '  tail -10 /var/log/user-data.log 2>/dev/null || echo "❌ UserData log not available yet"',
+            '  exit 1',
+            'fi',
+          ],
+        },
+      });
+
+      try {
+        const checkResponse = await ssmClient.send(checkCommand);
+        const checkCommandId = checkResponse.Command?.CommandId;
+
+        if (checkCommandId) {
+          await new Promise((resolve) => setTimeout(resolve, 2000));
+
+          const result = await ssmClient.send(
+            new GetCommandInvocationCommand({
+              CommandId: checkCommandId,
+              InstanceId: instanceId,
+            })
+          );
+
+          if (result.StandardOutputContent?.includes('SETUP_COMPLETE')) {
+            console.log('[SMART-DEPLOY] ✅ UserData setup complete!');
+            console.log('[SMART-DEPLOY] Repository cloned and ready');
+            setupComplete = true;
+
+            if (deploymentRecord) {
+              try {
+                await Deployment.findByIdAndUpdate(deploymentRecord._id, {
+                  rawLogs: (deploymentRecord.rawLogs || '') + '\n[SMART-DEPLOY] ✅ Setup complete - repository cloned\n',
+                });
+              } catch (dbError) {
+                console.error('[SMART-DEPLOY] Failed to update logs:', dbError);
+              }
+            }
+
+            break;
+          } else {
+            // Show diagnostic output from UserData
+            console.log(`[SMART-DEPLOY] Setup in progress... (attempt ${i + 1}/60)`);
+            if (result.StandardOutputContent) {
+              console.log('[SMART-DEPLOY] UserData status:', result.StandardOutputContent.slice(0, 500));
+            }
+            if (result.StandardErrorContent) {
+              console.error('[SMART-DEPLOY] UserData errors:', result.StandardErrorContent.slice(0, 500));
+            }
+          }
+        }
+      } catch (error: any) {
+        console.log(`[SMART-DEPLOY] Check failed: ${error.message}, retrying...`);
+      }
+    }
+    } // End of if (!setupComplete) block - reused instances skip UserData wait
+
+    if (!setupComplete) {
+      const errorMsg = 'UserData setup timeout - initial setup did not complete within 3 minutes. Check UserData logs for errors.';
+      console.error('[SMART-DEPLOY] ❌', errorMsg);
 
       if (deploymentRecord) {
-        try {
-          const current = await Deployment.findById(deploymentRecord._id);
-          const currentLogs = current?.rawLogs || '';
+        await Deployment.findByIdAndUpdate(deploymentRecord._id, {
+          status: 'failed',
+          errorMessage: errorMsg,
+        });
+      }
 
-          // Only append the progress line once or replace the previous one
-          const baseLogs = currentLogs.split('\n').filter(line => !line.includes('[PROGRESS]')).join('\n');
+      await releaseDeploymentLock();
 
+      return NextResponse.json({
+        success: false,
+        error: errorMsg,
+        instanceId,
+        publicIp,
+      }, { status: 500 });
+    }
+
+    console.log('[SMART-DEPLOY] Setup verification complete - proceeding with deployment');
+
+    // ═══════════════════════════════════════════════════════════════════════════════
+    // 🔧 INSTALL RUNTIME VIA SSM (for new instances only)
+    // ═══════════════════════════════════════════════════════════════════════════════
+    if (!existingInstance) {
+      console.log('[SMART-DEPLOY] ════════════════════════════════════════════════════════════');
+      console.log('[SMART-DEPLOY] 🔧 INSTALLING RUNTIME VIA SSM');
+      console.log('[SMART-DEPLOY] ════════════════════════════════════════════════════════════');
+      console.log('[SMART-DEPLOY] Runtime:', detectedRuntime);
+      console.log('[SMART-DEPLOY] Note: Moved from UserData to avoid AWS 25KB size limit');
+      
+      const runtimeInstallResult = await installRuntimeViaSSM(instanceId, detectedRuntime);
+      
+      if (!runtimeInstallResult.success) {
+        const errorMsg = `Runtime installation failed: ${runtimeInstallResult.error || 'Unknown error'}`;
+        console.error('[SMART-DEPLOY] ❌', errorMsg);
+        console.error('[SMART-DEPLOY] Runtime installation output:', runtimeInstallResult.output);
+        
+        if (deploymentRecord) {
           await Deployment.findByIdAndUpdate(deploymentRecord._id, {
-            rawLogs: baseLogs + `\n[SMART-DEPLOY] [PROGRESS] ${spinner} [${bar}] ${progress}% - Environment initialization`,
+            status: 'failed',
+            errorMessage: errorMsg,
+            rawLogs: runtimeInstallResult.output,
           });
-        } catch (dbError) {
-          console.error('[SMART-DEPLOY] Failed to update progress logs:', dbError);
+        }
+        
+        await releaseDeploymentLock();
+        
+        return NextResponse.json({
+          success: false,
+          error: errorMsg,
+          details: runtimeInstallResult.output,
+          instanceId,
+          publicIp,
+        }, { status: 500 });
+      }
+      
+      console.log('[SMART-DEPLOY] ✅ Runtime installation completed successfully');
+      console.log('[SMART-DEPLOY] Runtime output (last 500 chars):', runtimeInstallResult.output.slice(-500));
+      console.log('[SMART-DEPLOY] ════════════════════════════════════════════════════════════');
+    } else {
+      console.log('[SMART-DEPLOY] ℹ️  Reusing existing instance - runtime already installed');
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════════
+    // 🔄 GIT PULL FOR REUSED INSTANCES
+    // ═══════════════════════════════════════════════════════════════════════════════
+    if (existingInstance) {
+      console.log('[SMART-DEPLOY] ════════════════════════════════════════════════════════════');
+      console.log('[SMART-DEPLOY] 🔄 PULLING LATEST CODE (reused instance)');
+      console.log('[SMART-DEPLOY] ════════════════════════════════════════════════════════════');
+
+      try {
+        const gitPullCommand = new SendCommandCommand({
+          DocumentName: 'AWS-RunShellScript',
+          InstanceIds: [instanceId],
+          Parameters: {
+            commands: [
+              '#!/bin/bash',
+              'echo "[REDEPLOY] ════════════════════════════════════════════════════════════"',
+              'echo "[REDEPLOY] 🔄 REDEPLOYING ON EXISTING INSTANCE"',
+              'echo "[REDEPLOY] ════════════════════════════════════════════════════════════"',
+              'echo ""',
+              '',
+              'echo "[REDEPLOY] Step 1/3: Stopping old application..."',
+              'pkill -f "node.*app" 2>/dev/null && echo "  ✓ Killed Node.js" || echo "  - No Node.js"',
+              'pkill -f "python.*app" 2>/dev/null && echo "  ✓ Killed Python" || echo "  - No Python"',
+              'pkill -f "uvicorn" 2>/dev/null && echo "  ✓ Killed uvicorn" || echo "  - No uvicorn"',
+              'echo "[REDEPLOY] ✅ Old processes stopped"',
+              'echo ""',
+              '',
+              'echo "[REDEPLOY] Step 2/3: Pulling latest code (as ec2-user)..."',
+              '',
+              '# CRITICAL: Run as ec2-user to ensure proper git permissions',
+              'sudo -u ec2-user bash << "EOF_GIT_PULL"',
+              'set -e',
+              'cd /home/ec2-user/app',
+              '',
+              'echo "[GIT] Current directory: $(pwd)"',
+              'echo "[GIT] Running as user: $(whoami)"',
+              'echo "[GIT] Current branch: $(git branch --show-current)"',
+              'echo ""',
+              'echo "[GIT] Commit BEFORE pull:"',
+              'git log -1 --oneline',
+              'echo ""',
+              '',
+              'echo "[GIT] Fetching from origin..."',
+              'git fetch origin',
+              'echo "[GIT] ✓ Fetch complete"',
+              'echo ""',
+              '',
+              'echo "[GIT] Remote commit:"',
+              'git log origin/$(git branch --show-current) -1 --oneline',
+              'echo ""',
+              '',
+              'echo "[GIT] Hard resetting to match remote (discarding local changes)..."',
+              'git reset --hard origin/$(git branch --show-current)',
+              'echo ""',
+              '',
+              'echo "[GIT] ═══════════════════════════════════════════"',
+              'echo "[GIT] ✅ ✅ ✅ CODE UPDATED ✅ ✅ ✅"',
+              'echo "[GIT] ═══════════════════════════════════════════"',
+              'echo "[GIT] Commit AFTER pull:"',
+              'git log -1 --pretty=format:"Hash: %h%nAuthor: %an%nMessage: %s%n"',
+              'echo ""',
+              'echo ""',
+              'echo "[GIT] Changed files:"',
+              'git diff --name-status HEAD~1..HEAD 2>/dev/null | head -10 || echo "First commit"',
+              'echo ""',
+              '',
+              'EOF_GIT_PULL',
+              '',
+              'echo "[REDEPLOY] Step 3/3: Ready to re-run pipeline..."',
+              'echo "[REDEPLOY] ════════════════════════════════════════════════════════════"',
+              'echo ""',
+            ],
+          },
+        });
+
+        const gitPullResponse = await ssmClient.send(gitPullCommand);
+        const gitPullCommandId = gitPullResponse.Command?.CommandId;
+
+        if (gitPullCommandId) {
+          // Wait for git pull and process cleanup to complete
+          console.log('[SMART-DEPLOY] Waiting for git pull to complete (8 seconds)...');
+          await new Promise(resolve => setTimeout(resolve, 8000));
+
+          const gitResult = await ssmClient.send(
+            new GetCommandInvocationCommand({
+              CommandId: gitPullCommandId,
+              InstanceId: instanceId,
+            })
+          );
+
+          console.log('[SMART-DEPLOY] ═══════════════════════════════════════════════════════════');
+          console.log('[SMART-DEPLOY] Redeploy preparation output:');
+          console.log('[SMART-DEPLOY] ═══════════════════════════════════════════════════════════');
+          console.log(gitResult.StandardOutputContent);
+
+          if (gitResult.StandardErrorContent) {
+            console.log('[SMART-DEPLOY] Warnings/Errors:');
+            console.log(gitResult.StandardErrorContent);
+          }
+
+          console.log('[SMART-DEPLOY] ═══════════════════════════════════════════════════════════');
+          console.log('[SMART-DEPLOY] ✅ Instance ready for redeployment');
+          console.log('[SMART-DEPLOY] ✅ Old processes killed');
+          console.log('[SMART-DEPLOY] ✅ Latest code pulled');
+          console.log('[SMART-DEPLOY] ═══════════════════════════════════════════════════════════');
+
+          // Update deployment logs with git pull output
+          if (deploymentRecord) {
+            try {
+              const current = await Deployment.findById(deploymentRecord._id);
+              await Deployment.findByIdAndUpdate(deploymentRecord._id, {
+                rawLogs: (current?.rawLogs || '') + '\n\n' + gitResult.StandardOutputContent + '\n',
+              });
+            } catch (dbError) {
+              console.error('[SMART-DEPLOY] Failed to update deployment logs with git pull output');
+            }
+          }
+        }
+      } catch (error: any) {
+        console.error('[SMART-DEPLOY] ❌ Redeploy preparation failed:', error.message);
+        console.log('[SMART-DEPLOY] Will attempt to proceed anyway...');
+
+        // Log the failure to deployment record
+        if (deploymentRecord) {
+          try {
+            const current = await Deployment.findById(deploymentRecord._id);
+            await Deployment.findByIdAndUpdate(deploymentRecord._id, {
+              rawLogs: (current?.rawLogs || '') + '\n[SMART-DEPLOY] ⚠️  Git pull failed: ' + error.message + '\n',
+            });
+          } catch (dbError) {
+            // Ignore
+          }
         }
       }
 
-      await new Promise((resolve) => setTimeout(resolve, 5000));
+      console.log('[SMART-DEPLOY] ════════════════════════════════════════════════════════════');
     }
 
     // Update logs: Setup complete, starting stages
@@ -503,46 +1057,111 @@ chmod 600 .env`
         const current = await Deployment.findById(deploymentRecord._id);
         // Clean up progress lines
         const cleanLogs = (current?.rawLogs || '').split('\n').filter(line => !line.includes('[PROGRESS]')).join('\n');
-        
+
+        const statusMessage = existingInstance
+          ? '\n[SMART-DEPLOY] ✅ Code updated via git pull\n[SMART-DEPLOY] Starting pipeline stages...\n'
+          : '\n[SMART-DEPLOY] ✅ Initial setup complete\n[SMART-DEPLOY] Starting pipeline stages...\n';
+
         await Deployment.findByIdAndUpdate(deploymentRecord._id, {
-          rawLogs: cleanLogs + '\n[SMART-DEPLOY] ✅ Initial setup complete\n[SMART-DEPLOY] Starting pipeline stages...\n',
+          rawLogs: cleanLogs + statusMessage,
         });
       } catch (dbError) {
         console.error('[SMART-DEPLOY] Failed to update logs:', dbError);
       }
     }
 
-    // Step 3: SKIP ANALYSIS - Use pipeline commands directly (analysis already done during pipeline generation)
-    console.log('[SMART-DEPLOY] Using pipeline commands (skipping re-analysis for performance)');
-    console.log('[SMART-DEPLOY] Pipeline stages:', pipeline.stages.join(' → '));
+    // Step 3: AI-POWERED PIPELINE GENERATION - Use Claude Sonnet to analyze and generate perfect pipeline
+    console.log('[SMART-DEPLOY] ========================================');
+    console.log('[SMART-DEPLOY] 🤖 AI-POWERED DEPLOYMENT');
+    console.log('[SMART-DEPLOY] Using Claude Sonnet 4.6 for analysis');
+    console.log('[SMART-DEPLOY] ========================================');
 
-    // Create minimal stub objects for backward compatibility (not used for primary logic, only for error handling)
+    // Import AI analysis and pipeline generation modules
+    const { fetchUniversalProjectFilesFromGitHub } = await import('@/lib/github-universal-fetcher');
+    const { analyzeUniversalProject } = await import('@/lib/universal-language-analyzer');
+    const { generateAIPipeline } = await import('@/lib/ai/enhanced-pipeline-generator');
+    const { fetchProjectFiles, detectLanguageAndFramework } = await import('@/lib/github/multi-language-analyzer');
+
+    const [owner, repo] = repoFullName.split('/');
+
+    // Step 3.1: Fetch repository files
+    console.log('[SMART-DEPLOY] 📥 Step 3.1: Fetching repository files from GitHub...');
+    const universalFiles = await fetchUniversalProjectFilesFromGitHub(owner, repo, githubToken);
+    console.log('[SMART-DEPLOY] ✅ Files fetched. Detected languages:', universalFiles.detectedLanguages.join(', ') || 'Unknown');
+
+    // Step 3.2: AI Analysis using Claude Sonnet
+    console.log('[SMART-DEPLOY] 🤖 Step 3.2: Analyzing repository with Claude Sonnet AI...');
+    const aiAnalysis = await analyzeUniversalProject(universalFiles);
+    console.log('[SMART-DEPLOY] ✅ AI Analysis Complete:');
+    console.log('[SMART-DEPLOY]    Language:', aiAnalysis.language);
+    console.log('[SMART-DEPLOY]    Framework:', aiAnalysis.framework);
+    console.log('[SMART-DEPLOY]    Port:', aiAnalysis.port);
+    console.log('[SMART-DEPLOY]    Project Type:', aiAnalysis.projectType);
+
+    // Step 3.3: Generate AI-powered pipeline
+    console.log('[SMART-DEPLOY] ⚙️  Step 3.3: Generating optimized pipeline with Claude Sonnet...');
+    const projectFiles = await fetchProjectFiles(owner, repo, githubToken);
+    const languageInfo = detectLanguageAndFramework(projectFiles);
+    const generatedPipeline = await generateAIPipeline(repoFullName, projectFiles, languageInfo);
+
+    console.log('[SMART-DEPLOY] ✅ AI Pipeline Generated!');
+    console.log('[SMART-DEPLOY]    Stages:', generatedPipeline.stages.join(' → '));
+    console.log('[SMART-DEPLOY]    Method: Claude Sonnet 4.6 (AI-Generated)');
+
+    // Step 3.4: Parse AI-generated YAML pipeline
+    console.log('[SMART-DEPLOY] 📋 Step 3.4: Parsing AI-generated pipeline...');
+    const yaml = await import('yaml');
+    const aiPipeline = yaml.parse(generatedPipeline.yamlContent);
+
+    // Use AI-generated pipeline with proper structure (stages + jobs)
+    pipeline = {
+      stages: aiPipeline.stages || generatedPipeline.stages,
+      jobs: parsePipelineJobs(generatedPipeline.yamlContent),  // Parse jobs from YAML
+    };
+    console.log('[SMART-DEPLOY] ✅ Using AI-generated pipeline with', pipeline.stages.length, 'stages and', pipeline.jobs.length, 'jobs');
+
+    // Update saved pipeline in database with AI-generated version
+    await Pipeline.findByIdAndUpdate(savedPipeline._id, {
+      yaml: generatedPipeline.yamlContent,
+      language: aiAnalysis.language,
+      framework: aiAnalysis.framework,
+      port: aiAnalysis.port,
+      stages: generatedPipeline.stages,
+      startCommand: aiAnalysis.startCommand,
+    });
+
+    // Create analysis objects for backward compatibility
     const universalAnalysis = {
-      projectType: projectType.framework.includes('Express') || projectType.framework.includes('API') ? 'backend' : 'frontend',
-      port: 80,
+      projectType: aiAnalysis.projectType,
+      port: parseInt(aiAnalysis.port) || 80,
     };
 
     const buildConfig = {
-      framework: 'unknown', // Will force code to use pipeline commands instead
-      installCommand: '',
-      buildCommand: '',
-      testCommand: '',
+      framework: aiAnalysis.framework,
+      installCommand: aiAnalysis.installCommand,
+      buildCommand: aiAnalysis.buildCommand,
+      testCommand: aiAnalysis.testCommand || '',
       lintCommand: '',
-      startCommand: '',
+      startCommand: aiAnalysis.startCommand,
       optimizationFlags: [],
       environmentVars: {},
-      estimatedBuildTime: '5-10 minutes',
+      estimatedBuildTime: aiAnalysis.estimatedBuildTime || '5-10 minutes',
       progressMonitoring: false,
     };
 
     const projectAnalysis = {
-      buildTool: 'npm',
+      buildTool: aiAnalysis.buildTool,
       dependencies: [],
       devDependencies: [],
-      buildCommand: '',
-      installStrategy: 'npm install',
-      recommendations: [],
+      buildCommand: aiAnalysis.buildCommand,
+      installStrategy: aiAnalysis.installCommand,
+      recommendations: aiAnalysis.recommendations || [],
     };
+
+    // Update savedPipeline with AI analysis
+    savedPipeline.language = aiAnalysis.language;
+    savedPipeline.framework = aiAnalysis.framework;
+    savedPipeline.port = aiAnalysis.port;
 
     // Step 3.6: PRE-FLIGHT CHECKS - Fix common issues BEFORE attempting build (like Vercel does)
     // SKIP FOR NON-NODE.JS PROJECTS (Rust, Go, Python, etc.)
@@ -570,7 +1189,7 @@ chmod 600 .env`
         'echo "════════════════════════════════════════════════════════════"',
         '',
         '# 0. VERIFY NODE.JS VERSION',
-        'echo "[PRE-FLIGHT] 0/8: Verifying Node.js version..."',
+        'echo "[PRE-FLIGHT] 0/9: Verifying Node.js version..."',
         'CURRENT_NODE_VERSION=$(node -v | sed "s/v//")',
         'MAJOR_VERSION=$(echo $CURRENT_NODE_VERSION | cut -d. -f1)',
         'echo "  ℹ️  Current Node.js version: v$CURRENT_NODE_VERSION"',
@@ -604,7 +1223,7 @@ chmod 600 .env`
       'echo ""',
       '',
       '# 1. FIX JSX FILE EXTENSIONS (Most common issue)',
-      'echo "[PRE-FLIGHT] 1/8: Fixing JSX file extensions..."',
+      'echo "[PRE-FLIGHT] 1/9: Fixing JSX file extensions..."',
       'if [ -d "src" ]; then',
       '  JSX_FIXED=0',
       '  for file in $(find src -name "*.js" -type f 2>/dev/null); do',
@@ -637,7 +1256,7 @@ chmod 600 .env`
       'fi',
       '',
       '# 2. FIX TAILWIND CSS CONFIGURATION AND DEPENDENCIES',
-      'echo "[PRE-FLIGHT] 2/8: Configuring Tailwind CSS..."',
+      'echo "[PRE-FLIGHT] 2/9: Configuring Tailwind CSS..."',
       '',
       '# Check if Tailwind is USED in CSS files (most reliable detection)',
       'HAS_TAILWIND=false',
@@ -972,7 +1591,7 @@ chmod 600 .env`
       'echo ""',
       '',
       '# 2.6. ENSURE COMPLETE DEPENDENCIES FOR ALL FRAMEWORKS',
-      'echo "[PRE-FLIGHT] 2.6/8: Ensuring complete framework dependencies..."',
+      'echo "[PRE-FLIGHT] 2.6/9: Ensuring complete framework dependencies..."',
       'NEEDS_PACKAGE_LOCK_REFRESH=false',
       '',
       '# Next.js Projects',
@@ -1076,7 +1695,7 @@ chmod 600 .env`
       'fi',
       '',
       '# 3. ENSURE PROPER VITE CONFIGURATION',
-      'echo "[PRE-FLIGHT] 3/8: Verifying Vite configuration..."',
+      'echo "[PRE-FLIGHT] 3/9: Verifying Vite configuration..."',
       'if grep -q "\\"vite\\"" package.json 2>/dev/null; then',
       '  ',
       '  # Check if existing vite.config has problematic Tailwind v4 references',
@@ -1176,12 +1795,12 @@ chmod 600 .env`
       'fi',
       '',
       '# 4. FIX NPM PERMISSIONS AND OWNERSHIP',
-      'echo "[PRE-FLIGHT] 4/8: Fixing file permissions..."',
+      'echo "[PRE-FLIGHT] 4/9: Fixing file permissions..."',
       'chown -R ec2-user:ec2-user /home/ec2-user/app 2>/dev/null || true',
       'echo "  ✅ Ownership fixed"',
       '',
       '# 5. FIX POSTCSS CONFIG FOR ES MODULES',
-      'echo "[PRE-FLIGHT] 5/8: Fixing PostCSS config for ES modules..."',
+      'echo "[PRE-FLIGHT] 5/9: Fixing PostCSS config for ES modules..."',
       'if [ -f "package.json" ] && grep -q \'"type": "module"\' package.json 2>/dev/null; then',
       '  echo "  → Detected \\"type\\": \\"module\\" in package.json"',
       '  if [ -f "postcss.config.js" ]; then',
@@ -1199,7 +1818,7 @@ chmod 600 .env`
       'fi',
       '',
       '# 6. VERIFY DEPENDENCIES (ONLY FOR FRONTENDS)',
-      'echo "[PRE-FLIGHT] 6/8: Verifying project-specific dependencies..."',
+      'echo "[PRE-FLIGHT] 6/9: Verifying project-specific dependencies..."',
       'if [ -f "vite.config.js" ] || [ -f "vite.config.ts" ] || [ -f "vite.config.cjs" ]; then',
       '  echo "  → Frontend project detected (Vite config found)"',
       '  if ! npm list vite --depth=0 2>/dev/null | grep -q "vite@"; then',
@@ -1220,7 +1839,7 @@ chmod 600 .env`
       'echo "  ✅ Dependencies verified"',
       '',
       '# 7. ADD SWAP FILE FOR MEMORY-INTENSIVE BUILDS',
-      'echo "[PRE-FLIGHT] 7/8: Setting up swap file for build memory..."',
+      'echo "[PRE-FLIGHT] 7/9: Setting up swap file for build memory..."',
       'if [ ! -f "/swapfile" ]; then',
       '  echo "  → Creating 2GB swap file for build process..."',
       '  if sudo fallocate -l 2G /swapfile 2>/dev/null; then',
@@ -1238,6 +1857,118 @@ chmod 600 .env`
       'SWAP_SIZE=$(free -h | grep Swap | awk \'{print $2}\')',
       'echo "  → Available memory: $FREE_MEM"',
       'echo "  → Swap space: $SWAP_SIZE"',
+      '',
+      '# 8. VALIDATE PACKAGE.JSON SCRIPTS MATCH FRAMEWORK',
+      'echo "[PRE-FLIGHT] 8/9: Validating package.json scripts match detected framework..."',
+      `echo "  → Detected framework: ${savedPipeline.framework}"`,
+      '',
+      '# Read current scripts from package.json',
+      'if [ -f "package.json" ]; then',
+      '  CURRENT_BUILD=$(node -p "try { const pkg = require(\'./package.json\'); pkg.scripts.build || \'NOT_FOUND\' } catch(e) { \'NOT_FOUND\' }" 2>/dev/null)',
+      '  CURRENT_DEV=$(node -p "try { const pkg = require(\'./package.json\'); pkg.scripts.dev || \'NOT_FOUND\' } catch(e) { \'NOT_FOUND\' }" 2>/dev/null)',
+      '  CURRENT_START=$(node -p "try { const pkg = require(\'./package.json\'); pkg.scripts.start || \'NOT_FOUND\' } catch(e) { \'NOT_FOUND\' }" 2>/dev/null)',
+      '  ',
+      '  echo "  → Current scripts:"',
+      '  echo "    - build: $CURRENT_BUILD"',
+      '  echo "    - dev: $CURRENT_DEV"',
+      '  echo "    - start: $CURRENT_START"',
+      '  ',
+      `  # Detect framework mismatches based on AI analysis`,
+      `  FRAMEWORK="${savedPipeline.framework}"`,
+      '  NEEDS_SCRIPT_FIX=false',
+      '  ',
+      '  # Check for Next.js project with wrong scripts',
+      '  if grep -q "\\"next\\"" package.json 2>/dev/null; then',
+      '    echo "  → Next.js project detected"',
+      '    if [[ "$CURRENT_BUILD" == *"vite"* ]] || [[ "$CURRENT_DEV" == *"vite"* ]]; then',
+      '      echo "  ❌ CRITICAL: Next.js project has VITE scripts!"',
+      '      echo "  → This will cause build failure: \\"Cannot resolve entry module index.html\\""',
+      '      echo "  → Fixing scripts to use Next.js commands..."',
+      '      ',
+      '      # Fix scripts to use Next.js commands',
+      '      npm pkg set scripts.dev="next dev"',
+      '      npm pkg set scripts.build="next build"',
+      '      npm pkg set scripts.start="next start"',
+      '      npm pkg set scripts.lint="next lint"',
+      '      ',
+      '      echo "  ✅ Fixed package.json scripts for Next.js"',
+      '      NEEDS_SCRIPT_FIX=true',
+      '    elif [[ "$CURRENT_BUILD" != *"next"* ]]; then',
+      '      echo "  ⚠️  Build script does not use \\"next\\""',
+      '      echo "  → Setting Next.js build command..."',
+      '      npm pkg set scripts.build="next build"',
+      '      npm pkg set scripts.dev="next dev"',
+      '      npm pkg set scripts.start="next start"',
+      '      echo "  ✅ Updated scripts to use Next.js"',
+      '      NEEDS_SCRIPT_FIX=true',
+      '    else',
+      '      echo "  ✅ Scripts correctly use Next.js commands"',
+      '    fi',
+      '  fi',
+      '  ',
+      '  # Check for Vite project with wrong scripts',
+      '  if [ -f "vite.config.js" ] || [ -f "vite.config.ts" ]; then',
+      '    if [[ "$CURRENT_BUILD" == *"next"* ]] || [[ "$CURRENT_DEV" == *"next"* ]]; then',
+      '      echo "  ❌ CRITICAL: Vite project has NEXT.JS scripts!"',
+      '      echo "  → Fixing scripts to use Vite commands..."',
+      '      ',
+      '      npm pkg set scripts.dev="vite"',
+      '      npm pkg set scripts.build="vite build"',
+      '      npm pkg set scripts.preview="vite preview"',
+      '      ',
+      '      echo "  ✅ Fixed package.json scripts for Vite"',
+      '      NEEDS_SCRIPT_FIX=true',
+      '    elif [ "$CURRENT_BUILD" = "NOT_FOUND" ]; then',
+      '      echo "  ⚠️  No build script found"',
+      '      echo "  → Adding Vite build commands..."',
+      '      npm pkg set scripts.dev="vite"',
+      '      npm pkg set scripts.build="vite build"',
+      '      npm pkg set scripts.preview="vite preview"',
+      '      echo "  ✅ Added Vite scripts"',
+      '      NEEDS_SCRIPT_FIX=true',
+      '    else',
+      '      echo "  ✅ Vite config found, scripts look compatible"',
+      '    fi',
+      '  fi',
+      '  ',
+      '  # Check for Create React App with wrong scripts',
+      '  if grep -q "react-scripts" package.json 2>/dev/null; then',
+      '    echo "  → Create React App detected"',
+      '    if [[ "$CURRENT_BUILD" != *"react-scripts"* ]]; then',
+      '      echo "  ⚠️  Build script does not use react-scripts"',
+      '      echo "  → Setting CRA build commands..."',
+      '      npm pkg set scripts.start="react-scripts start"',
+      '      npm pkg set scripts.build="react-scripts build"',
+      '      npm pkg set scripts.test="react-scripts test"',
+      '      echo "  ✅ Updated scripts for Create React App"',
+      '      NEEDS_SCRIPT_FIX=true',
+      '    else',
+      '      echo "  ✅ Scripts correctly use react-scripts"',
+      '    fi',
+      '  fi',
+      '  ',
+      '  # Show updated scripts if changed',
+      '  if [ "$NEEDS_SCRIPT_FIX" = true ]; then',
+      '    echo "  "',
+      '    echo "  📝 Updated scripts:"',
+      '    NEW_BUILD=$(node -p "require(\'./package.json\').scripts.build" 2>/dev/null)',
+      '    NEW_DEV=$(node -p "require(\'./package.json\').scripts.dev" 2>/dev/null)',
+      '    NEW_START=$(node -p "require(\'./package.json\').scripts.start" 2>/dev/null)',
+      '    echo "    - build: $NEW_BUILD"',
+      '    echo "    - dev: $NEW_DEV"',
+      '    echo "    - start: $NEW_START"',
+      '    ',
+      '    # Delete package-lock.json so npm install uses updated scripts',
+      '    echo "  → Removing package-lock.json (will be regenerated)"',
+      '    rm -f package-lock.json',
+      '    echo "  ✅ Package.json scripts validated and fixed"',
+      '  else',
+      '    echo "  ✅ Package.json scripts match framework"',
+      '  fi',
+      'else',
+      '  echo "  ⚠️  No package.json found"',
+      'fi',
+      'echo ""',
       '',
       'echo "════════════════════════════════════════════════════════════"',
       'echo "📋 FIXES APPLIED SUMMARY"',
@@ -1292,31 +2023,42 @@ chmod 600 .env`
       console.log('[SMART-DEPLOY] Pre-flight output:', preFlightResult.output.slice(-1000));
     }
 
-    // Step 4: Run deployment stages via SSM with AI auto-fix
-    console.log('[SMART-DEPLOY] Running deployment stages...');
+    // Step 4: Run AI-generated pipeline stages via SSM with auto-fix
+    console.log('[SMART-DEPLOY] ========================================');
+    console.log('[SMART-DEPLOY] 🚀 EXECUTING AI-GENERATED PIPELINE');
+    console.log('[SMART-DEPLOY] ========================================');
+    console.log('[SMART-DEPLOY] Pipeline Source: Claude Sonnet 4.6 (AI)');
     console.log('[SMART-DEPLOY] Language:', savedPipeline.language);
     console.log('[SMART-DEPLOY] Framework:', savedPipeline.framework);
+    console.log('[SMART-DEPLOY] Port:', savedPipeline.port);
+    console.log('[SMART-DEPLOY] Stages:', pipeline.stages.join(' → '));
+    console.log('[SMART-DEPLOY] ========================================');
+
     const deploymentResult = await runStagesWithAutoFix(
       instanceId,
-      pipeline,
+      pipeline,  // AI-generated pipeline
       projectType,
       repoFullName,
       envVars,
-      projectAnalysis,
-      buildConfig,  // Pass AI-generated build config
+      projectAnalysis,  // AI analysis results
+      buildConfig,  // AI-generated build config
       deploymentRecord,  // Pass deployment record for real-time log updates
       savedPipeline.language  // Pass language to skip Node.js setup for non-Node projects
     );
 
-    // Collect all logs from all stages
+    // Collect all logs from all stages with AI attribution
     const allLogs = [
-      `[SMART-DEPLOY] ========================================`,
-      `[SMART-DEPLOY] DEPLOYMENT STARTED`,
-      `[SMART-DEPLOY] ========================================`,
-      `[SMART-DEPLOY] Repository: ${repoFullName}`,
-      `[SMART-DEPLOY] Framework: ${projectType.framework}`,
-      `[SMART-DEPLOY] Environment variables: ${Object.keys(envVars).length}`,
-      `[SMART-DEPLOY] Stages: ${pipeline.stages.join(', ')}`,
+      `[SMART-DEPLOY] ════════════════════════════════════════════════════════════`,
+      `[SMART-DEPLOY] 🤖 AI-POWERED DEPLOYMENT STARTED`,
+      `[SMART-DEPLOY] ════════════════════════════════════════════════════════════`,
+      `[SMART-DEPLOY] 🎯 Pipeline Generation: Claude Sonnet 4.6`,
+      `[SMART-DEPLOY] 📦 Repository: ${repoFullName}`,
+      `[SMART-DEPLOY] 🔧 Language: ${savedPipeline.language}`,
+      `[SMART-DEPLOY] ⚡ Framework: ${savedPipeline.framework}`,
+      `[SMART-DEPLOY] 🌐 Port: ${savedPipeline.port}`,
+      `[SMART-DEPLOY] 📋 Stages: ${pipeline.stages.join(' → ')}`,
+      `[SMART-DEPLOY] 🔐 Environment variables: ${Object.keys(envVars).length} configured`,
+      `[SMART-DEPLOY] ════════════════════════════════════════════════════════════`,
       ``,
       ...(deploymentResult.logs || []),
     ].join('\n');
@@ -1350,6 +2092,175 @@ chmod 600 .env`
         },
         { status: 500 }
       );
+    }
+
+    // Step 4.3: Verify build output for static projects (CRITICAL CHECK)
+    // Check if build stage produced index.html BEFORE attempting Nginx setup
+    const isLikelyStaticProject = savedPipeline.framework?.includes('React') ||
+                                   savedPipeline.framework?.includes('Vue') ||
+                                   savedPipeline.framework?.includes('Angular') ||
+                                   savedPipeline.framework?.includes('Vite') ||
+                                   savedPipeline.framework?.includes('Create React App');
+
+    if (isLikelyStaticProject && pipeline.stages.includes('build')) {
+      console.log('[BUILD-VERIFY] 🔍 Verifying static build output...');
+      console.log('[BUILD-VERIFY] Checking for index.html in build output...');
+
+      const buildVerifyResult = await executeSSMCommand(instanceId, [
+        'cd /home/ec2-user/app',
+        '',
+        '# Check for build output directories',
+        'if [ -d "build" ]; then',
+        '  BUILD_DIR="build"',
+        'elif [ -d "dist" ]; then',
+        '  BUILD_DIR="dist"',
+        'else',
+        '  echo "[BUILD-VERIFY] ❌ ERROR: No build/ or dist/ folder found!"',
+        '  exit 1',
+        'fi',
+        '',
+        'echo "[BUILD-VERIFY] Using build directory: $BUILD_DIR"',
+        'echo ""',
+        '',
+        '# Critical check: Does index.html exist?',
+        'if [ ! -f "$BUILD_DIR/index.html" ]; then',
+        '  echo "╔═══════════════════════════════════════════════════════════╗"',
+        '  echo "║        ❌ BUILD OUTPUT VERIFICATION FAILED ❌             ║"',
+        '  echo "╚═══════════════════════════════════════════════════════════╝"',
+        '  echo ""',
+        '  echo "[BUILD-VERIFY] ❌ CRITICAL ERROR: index.html not found in $BUILD_DIR/"',
+        '  echo ""',
+        '  echo "[BUILD-VERIFY] Your build command completed but did NOT generate React bundles."',
+        '  echo "[BUILD-VERIFY] This means npm run build is only copying public/ folder contents."',
+        '  echo ""',
+        '  echo "[BUILD-VERIFY] Files in $BUILD_DIR:"',
+        '  ls -lh "$BUILD_DIR/" | head -20',
+        '  echo ""',
+        '  echo "[BUILD-VERIFY] 📋 Diagnosing the issue..."',
+        '  echo ""',
+        '',
+        '  # Check if package.json has correct build script',
+        '  echo "[BUILD-VERIFY] 1. Checking package.json build script..."',
+        '  if grep -q \'"build"\' package.json; then',
+        '    BUILD_SCRIPT=$(grep \'"build"\' package.json)',
+        '    echo "[BUILD-VERIFY]    Found: $BUILD_SCRIPT"',
+        '    if echo "$BUILD_SCRIPT" | grep -q "react-scripts build"; then',
+        '      echo "[BUILD-VERIFY]    ✅ Build script looks correct"',
+        '    elif echo "$BUILD_SCRIPT" | grep -q "vite build"; then',
+        '      echo "[BUILD-VERIFY]    ✅ Build script looks correct"',
+        '    else',
+        '      echo "[BUILD-VERIFY]    ⚠️  Unusual build script - may not work correctly"',
+        '    fi',
+        '  else',
+        '    echo "[BUILD-VERIFY]    ❌ No build script found in package.json!"',
+        '  fi',
+        '  echo ""',
+        '',
+        '  # Check if src/ folder exists',
+        '  echo "[BUILD-VERIFY] 2. Checking src/ folder..."',
+        '  if [ -d "src" ]; then',
+        '    SRC_FILES=$(find src -name "*.js" -o -name "*.jsx" -o -name "*.ts" -o -name "*.tsx" | wc -l)',
+        '    echo "[BUILD-VERIFY]    ✅ src/ folder exists with $SRC_FILES files"',
+        '    if [ -f "src/index.js" ]; then',
+        '      echo "[BUILD-VERIFY]    ✅ Found entry point: src/index.js"',
+        '    elif [ -f "src/index.jsx" ]; then',
+        '      echo "[BUILD-VERIFY]    ✅ Found entry point: src/index.jsx"',
+        '    elif [ -f "src/main.jsx" ]; then',
+        '      echo "[BUILD-VERIFY]    ✅ Found entry point: src/main.jsx"',
+        '    else',
+        '      echo "[BUILD-VERIFY]    ⚠️  No standard entry point found (index.js/jsx, main.jsx)"',
+        '    fi',
+        '  else',
+        '    echo "[BUILD-VERIFY]    ❌ No src/ folder found!"',
+        '  fi',
+        '  echo ""',
+        '',
+        '  # Check build output for actual webpack errors (might be in logs)',
+        '  echo "[BUILD-VERIFY] 3. Common causes of this issue:"',
+        '  echo "[BUILD-VERIFY]    • Build script in package.json is incorrect"',
+        '  echo "[BUILD-VERIFY]    • Build process failed silently (check for errors above)"',
+        '  echo "[BUILD-VERIFY]    • Missing or incorrect entry point file"',
+        '  echo "[BUILD-VERIFY]    • Dependencies not installed correctly"',
+        '  echo ""',
+        '',
+        '  echo "[BUILD-VERIFY] 💡 To fix this issue:"',
+        '  echo "[BUILD-VERIFY]    1. Test locally: npm install && npm run build"',
+        '  echo "[BUILD-VERIFY]    2. Verify build/ or dist/ folder contains index.html"',
+        '  echo "[BUILD-VERIFY]    3. Check package.json has correct build script"',
+        '  echo "[BUILD-VERIFY]    4. Ensure src/index.js or src/main.jsx exists"',
+        '  echo ""',
+        '',
+        '  exit 1',
+        'else',
+        '  echo "╔═══════════════════════════════════════════════════════════╗"',
+        '  echo "║         ✅ BUILD OUTPUT VERIFICATION PASSED ✅            ║"',
+        '  echo "╚═══════════════════════════════════════════════════════════╝"',
+        '  echo ""',
+        '  echo "[BUILD-VERIFY] ✅ Found index.html in $BUILD_DIR/"',
+        '  HTML_SIZE=$(wc -c < "$BUILD_DIR/index.html")',
+        '  echo "[BUILD-VERIFY] ✅ index.html size: $HTML_SIZE bytes"',
+        '  echo ""',
+        '',
+        '  # Check for JavaScript bundles',
+        '  JS_COUNT=$(find "$BUILD_DIR" -name "*.js" -type f | wc -l)',
+        '  echo "[BUILD-VERIFY] ✅ JavaScript files: $JS_COUNT"',
+        '  if [ $JS_COUNT -eq 0 ]; then',
+        '    echo "[BUILD-VERIFY] ⚠️  WARNING: No JavaScript files found - site may not work"',
+        '  fi',
+        '  echo ""',
+        '',
+        '  # Check for CSS files',
+        '  CSS_COUNT=$(find "$BUILD_DIR" -name "*.css" -type f | wc -l)',
+        '  echo "[BUILD-VERIFY] ✅ CSS files: $CSS_COUNT"',
+        '  if [ $CSS_COUNT -eq 0 ]; then',
+        '    echo "[BUILD-VERIFY] ⚠️  WARNING: No CSS files found - site will have no styles"',
+        '  fi',
+        '  echo ""',
+        '',
+        '  echo "[BUILD-VERIFY] ✅ Build output is valid and ready for deployment!"',
+        'fi',
+      ]);
+
+      console.log('[BUILD-VERIFY] Verification result:', buildVerifyResult.success ? 'PASSED' : 'FAILED');
+
+      if (!buildVerifyResult.success) {
+        console.error('[BUILD-VERIFY] ❌ Build verification failed!');
+        console.error('[BUILD-VERIFY] Output:', buildVerifyResult.output);
+
+        const errorMessage = 'Build verification failed: index.html not found in build output. ' +
+          'Your npm run build command is not generating React bundles correctly. ' +
+          'This usually means the build script in package.json is incorrect or the build process is failing silently. ' +
+          'Test locally with: npm install && npm run build, then verify build/ or dist/ folder contains index.html.';
+
+        if (deploymentRecord) {
+          await Deployment.findByIdAndUpdate(deploymentRecord._id, {
+            status: 'failed',
+            errorMessage,
+            rawLogs: allLogs + '\n\n[BUILD-VERIFY]\n' + buildVerifyResult.output,
+          });
+        }
+
+        await releaseDeploymentLock();
+
+        return NextResponse.json({
+          success: false,
+          error: errorMessage,
+          logs: buildVerifyResult.output,
+          diagnostics: {
+            issue: 'Build output missing index.html',
+            buildFolder: buildVerifyResult.output,
+            suggestions: [
+              'Test build locally: npm install && npm run build',
+              'Check package.json has correct build script (e.g., "react-scripts build")',
+              'Verify src/index.js or src/main.jsx exists',
+              'Look for build errors in the logs above',
+            ],
+          },
+        }, { status: 500 });
+      }
+
+      console.log('[BUILD-VERIFY] ✅ Build output verified successfully');
+      console.log('[BUILD-VERIFY] index.html found - proceeding with deployment');
     }
 
     // Step 4.5: Universal Nginx Deployment - Setup Nginx for ANY project type
@@ -1393,7 +2304,33 @@ chmod 600 .env`
           console.error('[NGINX] ❌ Nginx deployment failed');
           console.error('[NGINX] Logs:', nginxLogs);
 
-          // Continue anyway - Nginx is enhancement, not blocker
+          // For STATIC projects, Nginx is REQUIRED - deployment fails if Nginx fails
+          if (isStaticProject) {
+            console.error('[NGINX] ❌ CRITICAL: Static projects require Nginx to serve files');
+            console.error('[NGINX] Common causes:');
+            console.error('[NGINX]   - index.html missing in build output');
+            console.error('[NGINX]   - Build command did not generate static files');
+            console.error('[NGINX]   - File permissions incorrect');
+
+            if (deploymentRecord) {
+              await Deployment.findByIdAndUpdate(deploymentRecord._id, {
+                status: 'failed',
+                errorMessage: 'Nginx deployment failed for static project. Build output may be missing index.html. Check that your build command generates static files correctly.',
+                rawLogs: allLogs + nginxLogs,
+              });
+            }
+
+            await releaseDeploymentLock();
+
+            return NextResponse.json({
+              success: false,
+              error: 'Static project deployment failed: Nginx could not serve files. Common causes: index.html missing from build output, build command incorrect, or file permissions issue.',
+              logs: allLogs + nginxLogs,
+              suggestion: 'Verify your build command generates an index.html file. For React apps, check that "npm run build" creates a build/ or dist/ folder with index.html inside.',
+            }, { status: 500 });
+          }
+
+          // For backend/dynamic projects, continue without Nginx (will use direct port access)
           console.log('[NGINX] ⚠️  Continuing without Nginx (will use direct port access)');
         } else {
           console.log('[NGINX] ✅ Nginx deployment successful!');
@@ -1587,13 +2524,34 @@ chmod 600 .env`
     ]);
     console.log('[SMART-DEPLOY] Build verification complete');
 
-    // Step 5: Start the application (SKIP FOR STATIC PROJECTS WITH NGINX)
+    // Step 5: Start the application (SKIP FOR STATIC PROJECTS AND COMPILED LANGUAGES)
     // For static projects, Nginx is already serving the files - no need for additional server
-    if (isStaticProject && nginxSuccessful) {
-      console.log('[SMART-DEPLOY] ✅ Static project already served by Nginx - skipping application server');
-      console.log('[SMART-DEPLOY] Application is accessible at:');
-      console.log(`[SMART-DEPLOY]   HTTP:  http://${publicIp}`);
-      console.log(`[SMART-DEPLOY]   HTTPS: https://${publicIp} (self-signed certificate)`);
+    // For compiled languages (Rust, Go, Java, Ruby, PHP), the pipeline deploy stage already started the app
+    const compiledLanguages = ['Rust', 'Go', 'Java', 'Ruby', 'PHP'];
+    const isPipelineHandledLanguage = compiledLanguages.includes(savedPipeline.language || '');
+
+    // CRITICAL: Static projects NEVER need runtime launcher (Nginx serves them)
+    // If we reach here with isStaticProject=true, Nginx already succeeded (or we would have failed earlier)
+    if (isStaticProject || isPipelineHandledLanguage) {
+      if (isPipelineHandledLanguage) {
+        console.log('[SMART-DEPLOY] ✅ ' + savedPipeline.language + ' project - pipeline deploy stage already started the application');
+        console.log('[SMART-DEPLOY] Skipping additional runtime launcher (would cause duplicate/wrong commands)');
+        console.log('[SMART-DEPLOY] Skipping Nginx - ' + savedPipeline.language + ' can serve HTTP directly');
+
+        // Configure security group to allow the native application port
+        const appPort = parseInt(savedPipeline.port || '8080', 10);
+        console.log(`[SMART-DEPLOY] Opening security group port ${appPort} for direct access...`);
+        await configureSecurityGroupPort(appPort);
+
+        console.log('[SMART-DEPLOY] Application is accessible at:');
+        console.log(`[SMART-DEPLOY]   HTTP:  http://${publicIp}:${appPort}`);
+        console.log(`[SMART-DEPLOY] Note: Application runs on native port ${appPort} (no Nginx reverse proxy)`);
+      } else {
+        console.log('[SMART-DEPLOY] ✅ Static project already served by Nginx - skipping application server');
+        console.log('[SMART-DEPLOY] Application is accessible at:');
+        console.log(`[SMART-DEPLOY]   HTTP:  http://${publicIp}`);
+        console.log(`[SMART-DEPLOY]   HTTPS: https://${publicIp} (self-signed certificate)`);
+      }
 
       // Mark deployment as successful
       if (deploymentRecord) {
@@ -1687,25 +2645,42 @@ chmod 600 .env`
     await releaseDeploymentLock();
     console.log('[SMART-DEPLOY] 🔓 Deployment lock released (success)');
 
-    console.log('[SMART-DEPLOY] ✅ Deployment complete!');
+    console.log('[SMART-DEPLOY] ════════════════════════════════════════════════════════════');
+    console.log('[SMART-DEPLOY] ✅ AI-POWERED DEPLOYMENT COMPLETED SUCCESSFULLY!');
+    console.log('[SMART-DEPLOY] ════════════════════════════════════════════════════════════');
+    console.log('[SMART-DEPLOY] 🤖 Pipeline: Generated by Claude Sonnet 4.6');
+    console.log('[SMART-DEPLOY] 📦 Project:', repoFullName);
+    console.log('[SMART-DEPLOY] 🔧 Framework:', savedPipeline.framework);
+    console.log('[SMART-DEPLOY] 🌐 Access URL:', `http://${publicIp}:${savedPipeline.port || '3000'}`);
+    console.log('[SMART-DEPLOY] ════════════════════════════════════════════════════════════');
 
-    // Prepare deployment summary message
+    // Prepare deployment summary message with AI attribution
     const isBackend = !isStaticProject;
     const appPort = isBackend ? (savedPipeline.port || '3000') : 'N/A';
     const deploymentMessage = isBackend
-      ? `${projectType.framework} application deployed successfully!\n` +
+      ? `🤖 AI-Powered Deployment Successful!\n` +
+        `✨ Pipeline generated by Claude Sonnet 4.6\n\n` +
+        `${projectType.framework} application deployed!\n` +
         `- Application runs on port ${appPort}\n` +
         `- Exposed directly (no reverse proxy)\n` +
         `- Security group configured automatically\n` +
         `- Access via: http://${publicIp}:${appPort}`
-      : `${projectType.framework} application deployed successfully! Access via HTTP (http://${publicIp}) or HTTPS (https://${publicIp})`;
+      : `🤖 AI-Powered Deployment Successful!\n` +
+        `✨ Pipeline generated by Claude Sonnet 4.6\n\n` +
+        `${projectType.framework} application deployed!\n` +
+        `Access via HTTP (http://${publicIp}) or HTTPS (https://${publicIp})`;
 
     return NextResponse.json({
       success: true,
+      aiGenerated: true,  // Mark as AI-generated
+      aiModel: 'Claude Sonnet 4.6',
       deploymentId: deploymentRecord?._id?.toString(),
       instanceId,
       publicIp,
       projectType: projectType.framework,
+      language: savedPipeline.language,
+      framework: savedPipeline.framework,
+      port: savedPipeline.port,
       stages: pipeline.stages,
       message: deploymentMessage,
       appPort: isBackend ? appPort : undefined,
@@ -1772,26 +2747,131 @@ async function runStagesWithAutoFix(
       'export CI=true',
     ];
 
-    // Add Node.js-specific environment ONLY for Node.js projects
-    if (isNodeProject) {
+    // Add language-specific environment setup based on detected language
+    if (language?.includes('Rust')) {
+      // RUST ENVIRONMENT - CRITICAL SETUP
+      console.log(`[STAGE ${i + 1}/${pipeline.stages.length}] Setting up Rust environment`);
+
+      // Set working directory and user
+      envSetupCommands.push('cd /home/ec2-user/app');
+      envSetupCommands.push('export HOME=/home/ec2-user');
+      envSetupCommands.push('export USER=ec2-user');
+
+      // Source system-wide Rust profile (created during UserData)
+      envSetupCommands.push('source /etc/profile.d/rust-env.sh 2>/dev/null || echo "[ENV] ⚠️  System Rust profile not found"');
+
+      // Source user Rust environment
+      envSetupCommands.push('[ -f "/home/ec2-user/.cargo/env" ] && source /home/ec2-user/.cargo/env || echo "[ENV] ⚠️  User Rust env not found"');
+
+      // Explicitly set Rust paths
+      envSetupCommands.push('export PATH="/home/ec2-user/.cargo/bin:$PATH"');
+      envSetupCommands.push('export CARGO_HOME="/home/ec2-user/.cargo"');
+      envSetupCommands.push('export RUSTUP_HOME="/home/ec2-user/.rustup"');
+
+      // Verify Rust is available
+      envSetupCommands.push('echo "[ENV] ═══════════════════════════════════════"');
+      envSetupCommands.push('echo "[ENV] Rust Environment Verification:"');
+      envSetupCommands.push('echo "[ENV] ═══════════════════════════════════════"');
+      envSetupCommands.push('echo "[ENV] Working directory: $(pwd)"');
+      envSetupCommands.push('echo "[ENV] PATH: $PATH"');
+      envSetupCommands.push('echo "[ENV] CARGO_HOME: $CARGO_HOME"');
+
+      // Check if rustc exists
+      envSetupCommands.push('if command -v rustc >/dev/null 2>&1; then');
+      envSetupCommands.push('  echo "[ENV] ✅ rustc: $(rustc --version)"');
+      envSetupCommands.push('else');
+      envSetupCommands.push('  echo "[ENV] ❌ CRITICAL: rustc not found in PATH"');
+      envSetupCommands.push('  echo "[ENV] Checking installation location..."');
+      envSetupCommands.push('  ls -la /home/ec2-user/.cargo/bin/ 2>/dev/null || echo "[ENV] .cargo/bin not found"');
+      envSetupCommands.push('fi');
+
+      // Check if cargo exists
+      envSetupCommands.push('if command -v cargo >/dev/null 2>&1; then');
+      envSetupCommands.push('  echo "[ENV] ✅ cargo: $(cargo --version)"');
+      envSetupCommands.push('else');
+      envSetupCommands.push('  echo "[ENV] ❌ CRITICAL: cargo not found in PATH"');
+      envSetupCommands.push('fi');
+
+      envSetupCommands.push('echo "[ENV] ═══════════════════════════════════════"');
+
+    } else if (language?.includes('Go')) {
+      // GO ENVIRONMENT
+      console.log(`[STAGE ${i + 1}/${pipeline.stages.length}] Setting up Go environment`);
+      envSetupCommands.push('cd /home/ec2-user/app');
+      envSetupCommands.push('export PATH="$PATH:/usr/local/go/bin:/home/ec2-user/go/bin"');
+      envSetupCommands.push('export GOPATH=/home/ec2-user/go');
+      envSetupCommands.push('export GOROOT=/usr/local/go');
+      envSetupCommands.push('export GO111MODULE=on');
+      envSetupCommands.push('echo "[ENV] Go environment:"');
+      envSetupCommands.push('go version 2>/dev/null || echo "[ENV] ⚠️  Go not installed"');
+      envSetupCommands.push('echo "[ENV] GOPATH: $GOPATH"');
+      envSetupCommands.push('echo "[ENV] Working directory: $(pwd)"');
+
+    } else if (language?.includes('Python')) {
+      // PYTHON ENVIRONMENT
+      console.log(`[STAGE ${i + 1}/${pipeline.stages.length}] Setting up Python environment`);
+      envSetupCommands.push('cd /home/ec2-user/app');
+      envSetupCommands.push('export PYTHONUNBUFFERED=1');
+      envSetupCommands.push('export PYTHONDONTWRITEBYTECODE=1');
+      envSetupCommands.push('export PATH="$PATH:/home/ec2-user/.local/bin"');
+      envSetupCommands.push('export PIP_NO_CACHE_DIR=1');
+      envSetupCommands.push('echo "[ENV] Python environment:"');
+      envSetupCommands.push('python3 --version 2>/dev/null || echo "[ENV] ⚠️  Python not installed"');
+      envSetupCommands.push('pip3 --version 2>/dev/null || echo "[ENV] ⚠️  pip not installed"');
+      envSetupCommands.push('echo "[ENV] Working directory: $(pwd)"');
+
+    } else if (language?.includes('Java')) {
+      // JAVA ENVIRONMENT
+      console.log(`[STAGE ${i + 1}/${pipeline.stages.length}] Setting up Java environment`);
+      envSetupCommands.push('cd /home/ec2-user/app');
+      envSetupCommands.push('export JAVA_HOME=/usr/lib/jvm/java-17-amazon-corretto');
+      envSetupCommands.push('export PATH="$PATH:$JAVA_HOME/bin"');
+      envSetupCommands.push('export MAVEN_OPTS="-Xmx2048m"');
+      envSetupCommands.push('echo "[ENV] Java environment:"');
+      envSetupCommands.push('java -version 2>/dev/null || echo "[ENV] ⚠️  Java not installed"');
+      envSetupCommands.push('mvn --version 2>/dev/null || echo "[ENV] Maven not installed"');
+      envSetupCommands.push('gradle --version 2>/dev/null || echo "[ENV] Gradle not installed"');
+      envSetupCommands.push('echo "[ENV] Working directory: $(pwd)"');
+
+    } else if (language?.includes('Ruby')) {
+      // RUBY ENVIRONMENT
+      console.log(`[STAGE ${i + 1}/${pipeline.stages.length}] Setting up Ruby environment`);
+      envSetupCommands.push('cd /home/ec2-user/app');
+      envSetupCommands.push('export PATH="$PATH:/home/ec2-user/.gem/ruby/bin"');
+      envSetupCommands.push('export GEM_HOME=/home/ec2-user/.gem/ruby');
+      envSetupCommands.push('export GEM_PATH=/home/ec2-user/.gem/ruby');
+      envSetupCommands.push('echo "[ENV] Ruby environment:"');
+      envSetupCommands.push('ruby --version 2>/dev/null || echo "[ENV] ⚠️  Ruby not installed"');
+      envSetupCommands.push('bundle --version 2>/dev/null || echo "[ENV] Bundler not installed"');
+      envSetupCommands.push('echo "[ENV] Working directory: $(pwd)"');
+
+    } else if (language?.includes('PHP')) {
+      // PHP ENVIRONMENT
+      console.log(`[STAGE ${i + 1}/${pipeline.stages.length}] Setting up PHP environment`);
+      envSetupCommands.push('cd /home/ec2-user/app');
+      envSetupCommands.push('export PATH="$PATH:/home/ec2-user/.composer/vendor/bin"');
+      envSetupCommands.push('export COMPOSER_HOME=/home/ec2-user/.composer');
+      envSetupCommands.push('echo "[ENV] PHP environment:"');
+      envSetupCommands.push('php --version 2>/dev/null || echo "[ENV] ⚠️  PHP not installed"');
+      envSetupCommands.push('composer --version 2>/dev/null || echo "[ENV] Composer not installed"');
+      envSetupCommands.push('echo "[ENV] Working directory: $(pwd)"');
+
+    } else if (isNodeProject) {
+      // NODE.JS ENVIRONMENT
+      console.log(`[STAGE ${i + 1}/${pipeline.stages.length}] Setting up Node.js environment`);
       envSetupCommands.push('export NODE_ENV=production');
       envSetupCommands.push('export PATH="$PATH:/home/ec2-user/app/node_modules/.bin"');
-      // Global memory optimization for node-based builds
-      envSetupCommands.push(`export NODE_OPTIONS="--max-old-space-size=4096"`);
+      envSetupCommands.push('export NODE_OPTIONS="--max-old-space-size=4096"');
+      envSetupCommands.push('echo "[ENV] Node.js environment:"');
+      envSetupCommands.push('node --version 2>/dev/null || echo "[ENV] ⚠️  Node.js not installed"');
+      envSetupCommands.push('npm --version 2>/dev/null || echo "[ENV] npm not installed"');
+      envSetupCommands.push('echo "[ENV] Working directory: $(pwd)"');
+
     } else {
-      console.log(`[STAGE ${i + 1}/${pipeline.stages.length}] Skipping Node.js environment (language: ${language})`);
-      // Add language-specific environment setup
-      if (language?.includes('Rust')) {
-        envSetupCommands.push('export HOME=/home/ec2-user');
-        envSetupCommands.push('source /home/ec2-user/.cargo/env 2>/dev/null || true');
-        envSetupCommands.push('export PATH="$PATH:/home/ec2-user/.cargo/bin"');
-      } else if (language?.includes('Go')) {
-        envSetupCommands.push('export PATH="$PATH:/usr/local/go/bin"');
-        envSetupCommands.push('export GOPATH=/home/ec2-user/go');
-      } else if (language?.includes('Python')) {
-        envSetupCommands.push('export PYTHONUNBUFFERED=1');
-        envSetupCommands.push('export PATH="$PATH:/home/ec2-user/.local/bin"');
-      }
+      // UNKNOWN/DOCKER ENVIRONMENT
+      console.log(`[STAGE ${i + 1}/${pipeline.stages.length}] Using minimal environment (language: ${language || 'unknown'})`);
+      envSetupCommands.push('echo "[ENV] Minimal environment - no specific runtime detected"');
+      envSetupCommands.push('echo "[ENV] Working directory: $(pwd)"');
     }
 
     // Export environment variables if provided
@@ -3208,7 +4288,27 @@ async function executeSSMCommand(
     // - Environment variable exports (PATH, NODE_ENV, etc.)
     // - Inline variable assignments (PATH="..." npm run build)
     // Solution: Join all commands with newlines and run as ONE command
-    const singleScript = commands.join('\n');
+
+    // CRITICAL FIX 2: Run as ec2-user, not ssm-user
+    // SSM by default runs as ssm-user, which doesn't have access to /home/ec2-user/.cargo
+    // Wrap all commands in a sudo -u ec2-user bash -c block
+
+    const singleScript = `#!/bin/bash
+# Run as ec2-user to access user-installed runtimes (Rust, Node, etc.)
+# SSM runs as ssm-user by default, which doesn't have access to /home/ec2-user/.cargo
+sudo -u ec2-user bash << 'EOF_EC2USER'
+# Don't use set -e here - let individual commands handle errors
+# set -o pipefail  # Catch errors in pipes (disabled to allow || true patterns)
+
+# Start of user commands
+${commands.join('\n')}
+
+# End of user commands - capture exit code
+COMMAND_EXIT_CODE=$?
+echo "[SSM] Command block exit code: $COMMAND_EXIT_CODE"
+exit $COMMAND_EXIT_CODE
+EOF_EC2USER
+`;
 
     const sendCmd = await ssmClient.send(
       new SendCommandCommand({
@@ -3566,6 +4666,481 @@ async function startUniversalApplication(
 /**
  * Parse pipeline YAML to extract jobs and scripts
  */
+/**
+ * Detect required runtime from pipeline commands
+ * Analyzes the AI-generated pipeline to determine what runtime to install
+ */
+function detectRuntimeFromPipeline(
+  pipeline: GeneratedPipeline,
+  savedPipeline: any
+): 'nodejs' | 'python' | 'rust' | 'go' | 'java' | 'ruby' | 'php' | 'docker' | 'unknown' {
+
+  // Priority 1: Check saved pipeline metadata (most reliable)
+  const language = savedPipeline?.language?.toLowerCase() || '';
+  const framework = savedPipeline?.framework?.toLowerCase() || '';
+
+  if (language.includes('rust') || framework.includes('rust')) return 'rust';
+  if (language.includes('go') || language.includes('golang')) return 'go';
+  if (language.includes('python')) return 'python';
+  if (language.includes('java')) return 'java';
+  if (language.includes('ruby')) return 'ruby';
+  if (language.includes('php')) return 'php';
+  if (language.includes('javascript') || language.includes('typescript') ||
+      framework.includes('node') || framework.includes('next') ||
+      framework.includes('react') || framework.includes('vue')) return 'nodejs';
+
+  // Priority 2: Analyze pipeline commands
+  const allCommands = pipeline.jobs
+    .flatMap(job => job.script)
+    .map(cmd => cmd.toLowerCase())
+    .join(' ');
+
+  // Rust detection
+  if (allCommands.includes('cargo build') ||
+      allCommands.includes('cargo run') ||
+      allCommands.includes('rustc')) {
+    return 'rust';
+  }
+
+  // Go detection
+  if (allCommands.includes('go build') ||
+      allCommands.includes('go run') ||
+      allCommands.includes('go mod')) {
+    return 'go';
+  }
+
+  // Python detection
+  if (allCommands.includes('pip install') ||
+      allCommands.includes('python') ||
+      allCommands.includes('uvicorn') ||
+      allCommands.includes('gunicorn') ||
+      allCommands.includes('flask') ||
+      allCommands.includes('django')) {
+    return 'python';
+  }
+
+  // Node.js detection
+  if (allCommands.includes('npm') ||
+      allCommands.includes('yarn') ||
+      allCommands.includes('pnpm') ||
+      allCommands.includes('node ')) {
+    return 'nodejs';
+  }
+
+  // Java detection
+  if (allCommands.includes('mvn') ||
+      allCommands.includes('gradle') ||
+      allCommands.includes('java -jar')) {
+    return 'java';
+  }
+
+  // Ruby detection
+  if (allCommands.includes('bundle install') ||
+      allCommands.includes('rake') ||
+      allCommands.includes('rails')) {
+    return 'ruby';
+  }
+
+  // PHP detection
+  if (allCommands.includes('composer') ||
+      allCommands.includes('php artisan')) {
+    return 'php';
+  }
+
+  // Docker detection
+  if (allCommands.includes('docker build') ||
+      allCommands.includes('docker run') ||
+      allCommands.includes('docker-compose')) {
+    return 'docker';
+  }
+
+  return 'unknown';
+}
+
+/**
+ * Generate runtime-specific UserData installation script
+ * Installs ONLY the runtime specified by the pipeline
+ */
+function generateRuntimeInstallScript(runtime: string): string {
+  const scripts: Record<string, string> = {
+    nodejs: `
+        echo "[SETUP] 🟢 NODE.JS RUNTIME (detected from pipeline)"
+        echo "[SETUP] Installing Node.js 20 LTS..."
+        curl -fsSL https://rpm.nodesource.com/setup_20.x | bash - 2>&1 | tail -10 || true
+        yum install -y nodejs 2>&1 | tail -5 || true
+
+        if command -v node >/dev/null 2>&1; then
+          echo "[SETUP] ✅ Node.js $(node -v) installed"
+          echo "[SETUP] ✅ npm $(npm -v) installed"
+          npm install -g yarn pnpm pm2 --force --loglevel=error 2>&1 | tail -5 || true
+          echo "[SETUP] ✅ Package managers installed"
+
+          # Add Node.js environment to bashrc
+          echo 'export NODE_ENV=production' >> /home/ec2-user/.bashrc
+          echo 'export PATH="$PATH:/home/ec2-user/app/node_modules/.bin"' >> /home/ec2-user/.bashrc
+          echo "[SETUP] ✅ Node.js environment configured"
+        else
+          echo "[SETUP] ❌ Node.js installation FAILED"
+        fi`,
+
+    python: `
+        echo "[SETUP] 🐍 PYTHON RUNTIME (detected from pipeline)"
+        echo "[SETUP] Installing Python 3.11..."
+        yum install -y python3.11 python3.11-pip python3.11-devel python3 python3-pip python3-devel 2>&1 | tail -5 || true
+        ln -sf /usr/bin/python3.11 /usr/bin/python3 2>/dev/null || true
+        ln -sf /usr/bin/pip3.11 /usr/bin/pip3 2>/dev/null || true
+
+        if command -v python3 >/dev/null 2>&1; then
+          echo "[SETUP] ✅ Python $(python3 --version 2>&1 | awk '{print $2}') installed"
+          pip3 install --upgrade pip setuptools wheel --quiet 2>&1 | tail -3 || true
+          echo "[SETUP] ✅ pip upgraded"
+
+          # Add Python environment to bashrc
+          echo 'export PATH="$PATH:/home/ec2-user/.local/bin"' >> /home/ec2-user/.bashrc
+          echo 'export PYTHONUNBUFFERED=1' >> /home/ec2-user/.bashrc
+          echo 'export PYTHONDONTWRITEBYTECODE=1' >> /home/ec2-user/.bashrc
+          echo "[SETUP] ✅ Python environment configured"
+        else
+          echo "[SETUP] ❌ Python installation FAILED"
+        fi`,
+
+    rust: `
+        echo "[SETUP] ════════════════════════════════════════════════════════════"
+        echo "[SETUP] 🦀 RUST RUNTIME INSTALLATION"
+        echo "[SETUP] ════════════════════════════════════════════════════════════"
+        echo "[SETUP] This may take 2-3 minutes..."
+        echo ""
+
+        # Ensure openssl-devel is installed FIRST (required for Rust compilation)
+        echo "[SETUP] Step 1/4: Installing Rust dependencies..."
+        yum install -y openssl-devel pkg-config 2>&1 | tail -5
+        echo "[SETUP] ✅ Dependencies installed"
+        echo ""
+
+        # Clean up any previous Rust installation attempts
+        echo "[SETUP] Cleaning up previous installation attempts..."
+        rm -rf /home/ec2-user/.cargo /home/ec2-user/.rustup 2>/dev/null || true
+        echo "[SETUP] Cleanup complete"
+        echo ""
+
+        # Create installation script that runs as ec2-user with proper HOME
+        echo "[SETUP] Step 2/4: Downloading and installing Rust toolchain..."
+        cat > /tmp/install-rust.sh << 'RUST_INSTALL_SCRIPT'
+#!/bin/bash
+export HOME=/home/ec2-user
+export USER=ec2-user
+cd /home/ec2-user
+
+echo "=== Rust Installation Script ==="
+echo "HOME: $HOME"
+echo "USER: $USER"
+echo "PWD: $(pwd)"
+echo ""
+
+# Download rustup installer
+echo "Downloading rustup installer..."
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs -o /tmp/rustup-init.sh --connect-timeout 30 --max-time 60
+if [ ! -f "/tmp/rustup-init.sh" ]; then
+  echo "ERROR: Failed to download rustup installer"
+  exit 1
+fi
+chmod +x /tmp/rustup-init.sh
+echo "✓ Rustup installer downloaded ($(du -h /tmp/rustup-init.sh | cut -f1))"
+
+# Install Rust with minimal profile (faster, only rustc and cargo)
+echo ""
+echo "Installing Rust stable (minimal profile for faster setup)..."
+echo "This may take 2-3 minutes for toolchain download..."
+echo "Starting at: $(date)"
+echo ""
+
+# Use timeout to prevent hanging (max 3 minutes for installation)
+# Set RUSTUP_INIT_SKIP_PATH_CHECK to avoid interactive prompts
+export RUSTUP_INIT_SKIP_PATH_CHECK=yes
+
+timeout 180 sh /tmp/rustup-init.sh -y \
+  --default-toolchain stable \
+  --profile minimal \
+  --no-modify-path
+
+INSTALL_EXIT_CODE=$?
+
+echo ""
+echo "Finished at: $(date)"
+echo "Rustup installer exit code: $INSTALL_EXIT_CODE"
+
+# Exit code 124 means timeout occurred
+if [ $INSTALL_EXIT_CODE -eq 124 ]; then
+  echo "ERROR: Rustup installation TIMED OUT after 3 minutes"
+  echo "This usually indicates:"
+  echo "  - Slow network connection to Rust servers"
+  echo "  - DNS resolution issues"
+  echo "  - Firewall blocking access"
+  echo ""
+  echo "Checking network connectivity..."
+  ping -c 3 static.rust-lang.org 2>&1 || echo "Cannot reach Rust servers"
+  echo ""
+  echo "Attempting fallback: Installing from yum repositories..."
+
+  # Fallback: Try to install from Amazon Linux Extras or EPEL
+  yum install -y rust cargo 2>&1 | tail -10 || echo "Fallback installation failed"
+
+  FALLBACK_CHECK=0
+  if command -v rustc >/dev/null 2>&1 && command -v cargo >/dev/null 2>&1; then
+    echo "✓ Fallback installation succeeded!"
+    rustc --version
+    cargo --version
+    FALLBACK_CHECK=1
+  fi
+
+  if [ $FALLBACK_CHECK -eq 0 ]; then
+    echo "ERROR: Both rustup and fallback installation failed"
+    exit 1
+  fi
+elif [ $INSTALL_EXIT_CODE -ne 0 ]; then
+  echo "ERROR: Rustup installation failed with code $INSTALL_EXIT_CODE"
+
+  # Show last 20 lines of any error logs
+  if [ -f "$HOME/.rustup/tmp/rustup.log" ]; then
+    echo "Last 20 lines of rustup log:"
+    tail -20 "$HOME/.rustup/tmp/rustup.log" 2>/dev/null || true
+  fi
+
+  exit 1
+else
+  echo "✓ Rustup installation completed successfully"
+fi
+
+# Source the cargo environment
+echo ""
+echo "Sourcing Rust environment..."
+if [ -f "$HOME/.cargo/env" ]; then
+  source "$HOME/.cargo/env"
+  echo "✓ Cargo environment sourced"
+  echo ""
+
+  # Verify installation
+  echo "Verifying installation:"
+  if rustc --version 2>&1; then
+    echo "✓ rustc is working"
+  else
+    echo "ERROR: rustc not working"
+    exit 1
+  fi
+
+  if cargo --version 2>&1; then
+    echo "✓ cargo is working"
+  else
+    echo "ERROR: cargo not working"
+    exit 1
+  fi
+else
+  echo "WARNING: .cargo/env not found"
+
+  # Check if rustc and cargo exist anyway (from fallback installation)
+  if command -v rustc >/dev/null 2>&1 && command -v cargo >/dev/null 2>&1; then
+    echo "✓ Rust binaries found in PATH (fallback installation)"
+    rustc --version
+    cargo --version
+  else
+    echo "ERROR: .cargo/env not found and binaries not in PATH"
+    exit 1
+  fi
+fi
+
+echo ""
+echo "=== Rust Installation Complete ==="
+exit 0
+RUST_INSTALL_SCRIPT
+
+        chmod +x /tmp/install-rust.sh
+        chown ec2-user:ec2-user /tmp/install-rust.sh
+
+        # Run installation script as ec2-user with proper environment
+        sudo -u ec2-user -H bash /tmp/install-rust.sh 2>&1 | tee /tmp/rust-install.log
+        RUST_INSTALL_STATUS=$?
+
+        echo ""
+        echo "[SETUP] Installation script exit status: $RUST_INSTALL_STATUS"
+        echo ""
+
+        if [ $RUST_INSTALL_STATUS -ne 0 ]; then
+          echo "[SETUP] ❌ Rust installation script failed with status $RUST_INSTALL_STATUS"
+          echo "[SETUP] Full installation log:"
+          cat /tmp/rust-install.log 2>/dev/null || echo "No log file found"
+          echo "[SETUP] Continuing to verification (will fail there)..."
+        else
+          echo "[SETUP] ✅ Rust installation script completed successfully"
+        fi
+
+        # Wait for filesystem sync
+        sleep 3
+
+        echo ""
+        echo "[SETUP] Step 3/4: Configuring Rust environment..."
+
+        # Set proper ownership (even if installation failed, directories might exist)
+        chown -R ec2-user:ec2-user /home/ec2-user/.cargo /home/ec2-user/.rustup 2>/dev/null || true
+
+        # Add to .bashrc for SSH sessions
+        if ! grep -q "Rust environment" /home/ec2-user/.bashrc 2>/dev/null; then
+          cat >> /home/ec2-user/.bashrc << 'RUST_ENV_EOF'
+# Rust environment
+export PATH="$PATH:/home/ec2-user/.cargo/bin"
+export CARGO_HOME="/home/ec2-user/.cargo"
+export RUSTUP_HOME="/home/ec2-user/.rustup"
+[ -f "$HOME/.cargo/env" ] && source "$HOME/.cargo/env"
+RUST_ENV_EOF
+        fi
+
+        # Create system-wide script for SSM sessions
+        cat > /etc/profile.d/rust-env.sh << 'RUST_PROFILE_EOF'
+# Rust environment for all users (especially SSM)
+export PATH="/home/ec2-user/.cargo/bin:$PATH"
+export CARGO_HOME="/home/ec2-user/.cargo"
+export RUSTUP_HOME="/home/ec2-user/.rustup"
+RUST_PROFILE_EOF
+        chmod +x /etc/profile.d/rust-env.sh
+
+        echo "[SETUP] ✅ Environment configured"
+        echo ""
+
+        echo "[SETUP] Step 4/4: Verifying Rust installation..."
+
+        # Verify binaries exist
+        if [ ! -f "/home/ec2-user/.cargo/bin/rustc" ]; then
+          echo "[SETUP] ❌ rustc binary not found at /home/ec2-user/.cargo/bin/rustc"
+          echo "[SETUP] Checking if .cargo directory exists:"
+          ls -la /home/ec2-user/.cargo/ 2>/dev/null || echo "[SETUP] .cargo directory doesn't exist"
+          echo "[SETUP] Checking if .cargo/bin directory exists:"
+          ls -la /home/ec2-user/.cargo/bin/ 2>/dev/null || echo "[SETUP] .cargo/bin directory doesn't exist"
+        elif [ ! -f "/home/ec2-user/.cargo/bin/cargo" ]; then
+          echo "[SETUP] ❌ cargo binary not found at /home/ec2-user/.cargo/bin/cargo"
+          echo "[SETUP] Contents of .cargo/bin:"
+          ls -la /home/ec2-user/.cargo/bin/ 2>/dev/null || echo "[SETUP] Directory doesn't exist"
+        else
+          # Both binaries exist - test execution
+          RUST_VERSION=$(sudo -u ec2-user bash -c "source /home/ec2-user/.cargo/env && rustc --version 2>&1" || echo "rustc execution failed")
+          CARGO_VERSION=$(sudo -u ec2-user bash -c "source /home/ec2-user/.cargo/env && cargo --version 2>&1" || echo "cargo execution failed")
+
+          echo "[SETUP] ════════════════════════════════════════════════════════════"
+          echo "[SETUP] ✅ RUST INSTALLATION SUCCESSFUL"
+          echo "[SETUP] ════════════════════════════════════════════════════════════"
+          echo "[SETUP] Rust: $RUST_VERSION"
+          echo "[SETUP] Cargo: $CARGO_VERSION"
+          echo "[SETUP] Location: /home/ec2-user/.cargo/bin"
+          echo "[SETUP] System Profile: /etc/profile.d/rust-env.sh"
+          echo "[SETUP] ════════════════════════════════════════════════════════════"
+        fi
+
+        echo ""`,
+
+    go: `
+        echo "[SETUP] 🐹 GO RUNTIME (detected from pipeline)"
+        echo "[SETUP] Installing Go 1.21.5..."
+        cd /tmp
+        GO_VERSION="1.21.5"
+        wget -q https://go.dev/dl/go\${GO_VERSION}.linux-amd64.tar.gz 2>&1 || true
+
+        if [ -f "go\${GO_VERSION}.linux-amd64.tar.gz" ]; then
+          rm -rf /usr/local/go
+          tar -C /usr/local -xzf go\${GO_VERSION}.linux-amd64.tar.gz 2>&1 || true
+          rm go\${GO_VERSION}.linux-amd64.tar.gz
+
+          echo 'export PATH=$PATH:/usr/local/go/bin:/home/ec2-user/go/bin' >> /home/ec2-user/.bashrc
+          echo 'export GOPATH=/home/ec2-user/go' >> /home/ec2-user/.bashrc
+          echo 'export GOROOT=/usr/local/go' >> /home/ec2-user/.bashrc
+          echo 'export GO111MODULE=on' >> /home/ec2-user/.bashrc
+
+          if [ -f "/usr/local/go/bin/go" ]; then
+            GO_VER=$(/usr/local/go/bin/go version 2>/dev/null || echo "Go installed")
+            echo "[SETUP] ✅ $GO_VER"
+            sudo -u ec2-user mkdir -p /home/ec2-user/go/{bin,src,pkg} || true
+            echo "[SETUP] ✅ Go workspace created"
+            echo "[SETUP] ✅ Go environment configured"
+          fi
+        else
+          echo "[SETUP] ❌ Go download FAILED"
+        fi`,
+
+    java: `
+        echo "[SETUP] ☕ JAVA RUNTIME (detected from pipeline)"
+        echo "[SETUP] Installing Java OpenJDK 17..."
+        yum install -y java-17-amazon-corretto-devel maven gradle 2>&1 | tail -5 || true
+
+        if command -v java >/dev/null 2>&1; then
+          echo "[SETUP] ✅ $(java -version 2>&1 | head -1)"
+          echo 'export JAVA_HOME=/usr/lib/jvm/java-17-amazon-corretto' >> /home/ec2-user/.bashrc
+          echo 'export PATH=$PATH:$JAVA_HOME/bin' >> /home/ec2-user/.bashrc
+          echo 'export MAVEN_OPTS="-Xmx2048m"' >> /home/ec2-user/.bashrc
+          echo "[SETUP] ✅ Java environment configured"
+        else
+          echo "[SETUP] ❌ Java installation FAILED"
+        fi`,
+
+    ruby: `
+        echo "[SETUP] 💎 RUBY RUNTIME (detected from pipeline)"
+        echo "[SETUP] Installing Ruby..."
+        yum install -y ruby ruby-devel rubygems 2>&1 | tail -5 || true
+
+        if command -v ruby >/dev/null 2>&1; then
+          echo "[SETUP] ✅ $(ruby --version)"
+          gem install bundler --no-document 2>&1 | tail -3 || true
+          echo "[SETUP] ✅ Bundler installed"
+
+          # Add Ruby environment to bashrc
+          echo 'export PATH="$PATH:/home/ec2-user/.gem/ruby/bin"' >> /home/ec2-user/.bashrc
+          echo 'export GEM_HOME=/home/ec2-user/.gem/ruby' >> /home/ec2-user/.bashrc
+          echo 'export GEM_PATH=/home/ec2-user/.gem/ruby' >> /home/ec2-user/.bashrc
+          echo "[SETUP] ✅ Ruby environment configured"
+        else
+          echo "[SETUP] ❌ Ruby installation FAILED"
+        fi`,
+
+    php: `
+        echo "[SETUP] 🐘 PHP RUNTIME (detected from pipeline)"
+        echo "[SETUP] Installing PHP..."
+        yum install -y php php-cli php-fpm php-json php-mbstring php-xml php-zip 2>&1 | tail -5 || true
+
+        if command -v php >/dev/null 2>&1; then
+          echo "[SETUP] ✅ $(php --version | head -1)"
+          curl -sS https://getcomposer.org/installer | php 2>&1 || true
+          mv composer.phar /usr/local/bin/composer 2>/dev/null || true
+          chmod +x /usr/local/bin/composer 2>/dev/null || true
+          echo "[SETUP] ✅ Composer installed"
+
+          # Add PHP environment to bashrc
+          echo 'export PATH="$PATH:/home/ec2-user/.composer/vendor/bin"' >> /home/ec2-user/.bashrc
+          echo 'export COMPOSER_HOME=/home/ec2-user/.composer' >> /home/ec2-user/.bashrc
+          echo "[SETUP] ✅ PHP environment configured"
+        else
+          echo "[SETUP] ❌ PHP installation FAILED"
+        fi`,
+
+    docker: `
+        echo "[SETUP] 🐳 DOCKER RUNTIME (detected from pipeline)"
+        echo "[SETUP] Installing Docker..."
+        yum install -y docker 2>&1 | tail -5 || true
+        systemctl enable docker 2>&1 || true
+        systemctl start docker 2>&1 || true
+        usermod -aG docker ec2-user 2>&1 || true
+
+        if command -v docker >/dev/null 2>&1; then
+          echo "[SETUP] ✅ $(docker --version)"
+        else
+          echo "[SETUP] ❌ Docker installation FAILED"
+        fi`,
+
+    unknown: `
+        echo "[SETUP] ⚠️ UNKNOWN RUNTIME"
+        echo "[SETUP] Could not determine runtime from pipeline"
+        echo "[SETUP] Pipeline may use Docker or custom setup"
+        echo "[SETUP] Proceeding with minimal environment..."`
+  };
+
+  return scripts[runtime] || scripts.unknown;
+}
+
 function parsePipelineJobs(yamlContent: string): Array<{ name: string; stage: string; script: string[] }> {
   const jobs: Array<{ name: string; stage: string; script: string[] }> = [];
 

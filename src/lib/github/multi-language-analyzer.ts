@@ -10,6 +10,9 @@ export interface ProjectFiles {
   yarnLock?: string;
   pnpmLock?: string;
   tsconfigJson?: string;
+  indexJs?: string;
+  serverJs?: string;
+  appJs?: string;
 
   // Python
   requirementsTxt?: string;
@@ -33,14 +36,18 @@ export interface ProjectFiles {
   pomXml?: string;
   buildGradle?: string;
   gradleProperties?: string;
+  applicationProperties?: string;
 
   // Ruby
   gemfile?: string;
   gemfileLock?: string;
+  appRb?: string;
+  configRu?: string;
 
   // PHP
   composerJson?: string;
   composerLock?: string;
+  indexPhp?: string;
 
   // .NET / C#
   csproj?: string;
@@ -101,6 +108,9 @@ export async function fetchProjectFiles(
     { key: 'yarnLock', path: 'yarn.lock' },
     { key: 'pnpmLock', path: 'pnpm-lock.yaml' },
     { key: 'tsconfigJson', path: 'tsconfig.json' },
+    { key: 'indexJs', path: 'index.js' },
+    { key: 'serverJs', path: 'server.js' },
+    { key: 'appJs', path: 'app.js' },
 
     // Python
     { key: 'requirementsTxt', path: 'requirements.txt' },
@@ -124,14 +134,18 @@ export async function fetchProjectFiles(
     { key: 'pomXml', path: 'pom.xml' },
     { key: 'buildGradle', path: 'build.gradle' },
     { key: 'gradleProperties', path: 'gradle.properties' },
+    { key: 'applicationProperties', path: 'src/main/resources/application.properties' },
 
     // Ruby
     { key: 'gemfile', path: 'Gemfile' },
     { key: 'gemfileLock', path: 'Gemfile.lock' },
+    { key: 'appRb', path: 'app.rb' },
+    { key: 'configRu', path: 'config.ru' },
 
     // PHP
     { key: 'composerJson', path: 'composer.json' },
     { key: 'composerLock', path: 'composer.lock' },
+    { key: 'indexPhp', path: 'index.php' },
 
     // .NET
     { key: 'csproj', path: 'project.csproj' },
@@ -198,14 +212,53 @@ export function detectLanguageAndFramework(files: ProjectFiles): LanguageDetecti
     const pkg = JSON.parse(files.packageJson);
     const deps = { ...pkg.dependencies, ...pkg.devDependencies };
 
+    // Detect framework (priority: specific -> general)
     let framework = 'Node.js';
-    if (deps.next) framework = 'Next.js';
-    else if (deps.react) framework = 'React';
-    else if (deps.vue) framework = 'Vue.js';
-    else if (deps['@angular/core']) framework = 'Angular';
-    else if (deps.express) framework = 'Express.js';
-    else if (deps['@nestjs/core']) framework = 'NestJS';
-    else if (deps.vite) framework = 'Vite';
+    let buildTool: string | undefined;
+    let port = '3000';
+
+    // Framework detection (check specific first)
+    if (deps.next || files.nextConfig) {
+      framework = 'Next.js';
+      buildTool = 'next';
+    } else if (deps['@nestjs/core']) {
+      framework = 'NestJS';
+      buildTool = 'nest';
+    } else if (deps.express || deps.fastify || deps.koa) {
+      framework = 'Express.js';
+      buildTool = 'node';
+    } else if (deps.vue || deps['@vue/cli'] || files.nuxtConfig) {
+      framework = 'Vue.js';
+      buildTool = deps.vite ? 'vite' : deps.webpack ? 'webpack' : 'vue-cli';
+    } else if (deps['@angular/core']) {
+      framework = 'Angular';
+      buildTool = 'angular-cli';
+    } else if (deps.react || deps['react-dom']) {
+      // Detect React with specific build tool
+      if (deps['react-scripts']) {
+        framework = 'Create React App';
+        buildTool = 'react-scripts';
+      } else if (deps.vite || files.viteConfig) {
+        framework = 'React (Vite)';
+        buildTool = 'vite';
+      } else {
+        framework = 'React';
+        buildTool = deps.webpack ? 'webpack' : 'unknown';
+      }
+    } else if (deps.vite || files.viteConfig) {
+      // Vite without framework
+      framework = 'Vite';
+      buildTool = 'vite';
+    }
+
+    // Detect build tool if not already set
+    if (!buildTool) {
+      if (deps.vite || files.viteConfig) buildTool = 'vite';
+      else if (deps.webpack || files.webpackConfig) buildTool = 'webpack';
+      else if (deps['@vitejs/plugin-react']) buildTool = 'vite';
+      else if (deps['react-scripts']) buildTool = 'react-scripts';
+      else if (pkg.scripts?.build) buildTool = 'npm';
+    }
 
     const packageManager = files.yarnLock ? 'yarn' : files.pnpmLock ? 'pnpm' : 'npm';
 
@@ -213,11 +266,11 @@ export function detectLanguageAndFramework(files: ProjectFiles): LanguageDetecti
       primaryLanguage: 'JavaScript/TypeScript',
       framework,
       packageManager,
-      buildTool: deps.vite ? 'vite' : deps.webpack ? 'webpack' : undefined,
+      buildTool,
       hasTests: !!pkg.scripts?.test,
       hasLinter: !!pkg.scripts?.lint,
       detectedFiles,
-      port: '3000',
+      port,
     };
   }
 
